@@ -1,0 +1,354 @@
+import React, {useState} from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+} from 'react-native';
+import {COLORS} from '../theme/colors';
+import {CoupleAccount} from '../data/assignedUsers';
+
+interface MemoryNote {
+  id: string;
+  author: string;
+  date: string;
+  title: string;
+  content: string;
+}
+
+interface MemoriesScreenProps {
+  account: CoupleAccount;
+}
+
+export const MemoriesScreen: React.FC<MemoriesScreenProps> = ({account}) => {
+  const [notes, setNotes] = useState<MemoryNote[]>([
+    {
+      id: 'm1',
+      author: account.partnerOne,
+      date: 'Hace 2 días',
+      title: 'Nuestra noche inolvidable',
+      content:
+        'Cada momento a tu lado se siente como un secreto que solo nosotros dos entendemos. Gracias por ser mi refugio y mi complicidad.',
+    },
+    {
+      id: 'm2',
+      author: account.partnerTwo,
+      date: '14 Feb',
+      title: 'Promesa en dorado',
+      content:
+        'Guardaré siempre la primera vez que nos miramos sin decir nada y supimos que esto iba a ser extraordinario.',
+    },
+  ]);
+
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [author, setAuthor] = useState(account.partnerOne);
+  const [dateStr, setDateStr] = useState('Hoy');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [isWriting, setIsWriting] = useState(false);
+
+  const openNewNote = () => {
+    setEditingId(null);
+    setAuthor(account.partnerOne);
+    setDateStr('Hoy');
+    setTitle('');
+    setBody('');
+    setIsWriting(!isWriting);
+  };
+
+  const startEditNote = (note: MemoryNote) => {
+    setEditingId(note.id);
+    setAuthor(note.author);
+    setDateStr(note.date);
+    setTitle(note.title);
+    setBody(note.content);
+    setIsWriting(true);
+  };
+
+  const deleteNote = (id: string) => {
+    setNotes(prev => prev.filter(n => n.id !== id));
+  };
+
+  const handleSaveNote = () => {
+    if (!title.trim() || !body.trim()) {
+      return;
+    }
+    if (editingId) {
+      setNotes(prev =>
+        prev.map(n =>
+          n.id === editingId
+            ? {
+                ...n,
+                author,
+                date: dateStr.trim() || 'Hoy',
+                title: title.trim(),
+                content: body.trim(),
+              }
+            : n,
+        ),
+      );
+    } else {
+      const created: MemoryNote = {
+        id: Date.now().toString(),
+        author,
+        date: dateStr.trim() || 'Hoy',
+        title: title.trim(),
+        content: body.trim(),
+      };
+      setNotes([created, ...notes]);
+    }
+    setTitle('');
+    setBody('');
+    setEditingId(null);
+    setIsWriting(false);
+  };
+
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}>
+      <View style={styles.headerRow}>
+        <View>
+          <Text style={styles.overline}>CÁPSULA DE EMOCIONES</Text>
+          <Text style={styles.title}>Cartas & Recuerdos</Text>
+        </View>
+        <TouchableOpacity style={styles.writeToggleBtn} onPress={openNewNote}>
+          <Text style={styles.writeToggleText}>
+            {isWriting ? 'Cerrar ✕' : '+ Escribir Carta'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {isWriting && (
+        <View style={styles.composerCard}>
+          <Text style={styles.composerLabel}>
+            {editingId ? 'EDITAR CARTA O RECUERDO' : 'DEDICAR UNA NOTA DE AMOR'}
+          </Text>
+          <View style={styles.noteHeader}>
+            <View style={styles.authorSelectRow}>
+              {[account.partnerOne, account.partnerTwo].map(p => (
+                <TouchableOpacity
+                  key={p}
+                  onPress={() => setAuthor(p)}
+                  style={[
+                    styles.authorPill,
+                    author === p && {backgroundColor: COLORS.gold},
+                  ]}>
+                  <Text
+                    style={[
+                      styles.authorText,
+                      author === p && {color: COLORS.wineDark},
+                    ]}>
+                    De: {p}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+          <TextInput
+            style={styles.inputTitle}
+            placeholder="Título del recuerdo o carta..."
+            placeholderTextColor={COLORS.textMuted}
+            value={title}
+            onChangeText={setTitle}
+          />
+          <TextInput
+            style={styles.inputBody}
+            placeholder="Escribe lo que sientes..."
+            placeholderTextColor={COLORS.textMuted}
+            multiline
+            value={body}
+            onChangeText={setBody}
+          />
+          <TouchableOpacity style={styles.saveBtn} onPress={handleSaveNote}>
+            <Text style={styles.saveBtnText}>
+              {editingId ? 'Guardar Cambios ✓' : 'Guardar en Nuestra Cápsula'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {notes.map(note => (
+        <View key={note.id} style={styles.noteCard}>
+          <View style={styles.noteHeader}>
+            <View style={styles.authorPill}>
+              <Text style={styles.authorText}>De: {note.author}</Text>
+            </View>
+            <View style={styles.noteActionsRow}>
+              <Text style={styles.dateText}>{note.date}</Text>
+              <TouchableOpacity onPress={() => startEditNote(note)}>
+                <Text style={styles.dateText}>✎</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => deleteNote(note.id)}>
+                <Text style={[styles.dateText, styles.deleteNoteText]}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          <Text style={styles.noteTitle}>{note.title}</Text>
+          <Text style={styles.noteContent}>{note.content}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.wineDeep,
+  },
+  content: {
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 120,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  overline: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: COLORS.goldLight,
+  },
+  title: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: COLORS.creamLight,
+    marginTop: 2,
+  },
+  writeToggleBtn: {
+    backgroundColor: COLORS.gold,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.goldLight,
+  },
+  writeToggleText: {
+    color: COLORS.textDark,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  composerCard: {
+    backgroundColor: COLORS.wineVelvet,
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+  },
+  composerLabel: {
+    color: COLORS.goldLight,
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    marginBottom: 8,
+  },
+  inputTitle: {
+    backgroundColor: COLORS.wineDeep,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+    paddingHorizontal: 12,
+    height: 38,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+    marginBottom: 8,
+  },
+  inputBody: {
+    backgroundColor: COLORS.wineDeep,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 74,
+    textAlignVertical: 'top',
+    fontSize: 12.5,
+    color: COLORS.textPrimary,
+    marginBottom: 10,
+  },
+  saveBtn: {
+    backgroundColor: COLORS.gold,
+    borderRadius: 12,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.goldLight,
+  },
+  saveBtnText: {
+    color: COLORS.textDark,
+    fontWeight: '800',
+    fontSize: 12,
+  },
+  noteCard: {
+    backgroundColor: COLORS.wineVelvet,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  noteHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  authorPill: {
+    backgroundColor: COLORS.wineDeep,
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  authorText: {
+    color: COLORS.goldLight,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  dateText: {
+    color: COLORS.taupe,
+    fontSize: 10.5,
+    fontWeight: '600',
+  },
+  noteTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.creamLight,
+    marginBottom: 4,
+  },
+  noteContent: {
+    fontSize: 12.5,
+    lineHeight: 18,
+    color: COLORS.taupe,
+  },
+  authorSelectRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  noteActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  deleteNoteText: {
+    color: COLORS.danger,
+  },
+});
+
