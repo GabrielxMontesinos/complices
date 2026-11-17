@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -7,9 +7,16 @@ import {
   Image,
   TouchableOpacity,
   TextInput,
+  Share,
+  Alert,
 } from 'react-native';
 import {COLORS, TabKey} from '../theme/colors';
 import {CoupleAccount} from '../data/assignedUsers';
+import {
+  fetchCoupleStatus,
+  upsertCoupleStatus,
+  generateNewCoupleCode,
+} from '../lib/supabase';
 
 interface HomeScreenProps {
   account: CoupleAccount;
@@ -41,6 +48,43 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const [selectedMood, setSelectedMood] = useState('complice');
   const [sparks, setSparks] = useState<string[]>(INITIAL_SPARKS);
   const [sparkIndex, setSparkIndex] = useState(0);
+
+  // Cargar estado desde Supabase
+  useEffect(() => {
+    if (!account?.id) {
+      return;
+    }
+    const loadStatus = async () => {
+      try {
+        const remote = await fetchCoupleStatus(account.id!);
+        if (remote) {
+          if (remote.selected_mood) {
+            setSelectedMood(remote.selected_mood);
+          }
+          if (remote.sparks && remote.sparks.length > 0) {
+            setSparks(remote.sparks);
+          }
+          if (typeof remote.spark_index === 'number') {
+            setSparkIndex(remote.spark_index);
+          }
+        }
+      } catch (err) {
+        console.warn('Error loading couple status:', err);
+      }
+    };
+    loadStatus();
+  }, [account?.id]);
+
+  const handleSelectMood = async (moodId: string) => {
+    setSelectedMood(moodId);
+    if (account?.id) {
+      try {
+        await upsertCoupleStatus(account.id, {selected_mood: moodId});
+      } catch (err) {
+        console.warn('Error saving mood:', err);
+      }
+    }
+  };
 
   // Estado de edición de tiempo juntos
   const [isEditingTime, setIsEditingTime] = useState(false);
@@ -83,23 +127,76 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setIsEditingTime(false);
   };
 
-  const nextSpark = () => {
-    setSparkIndex(prev => (prev + 1) % sparks.length);
+  const nextSpark = async () => {
+    const nextIdx = (sparkIndex + 1) % sparks.length;
+    setSparkIndex(nextIdx);
+    if (account?.id) {
+      try {
+        await upsertCoupleStatus(account.id, {spark_index: nextIdx});
+      } catch (err) {
+        console.warn('Error saving spark index:', err);
+      }
+    }
   };
 
-  const saveSpark = (asNew: boolean) => {
+  const saveSpark = async (asNew: boolean) => {
     if (!sparkDraft.trim()) {
       return;
     }
+    let newSparks = sparks;
+    let newIdx = sparkIndex;
     if (asNew) {
-      setSparks([sparkDraft.trim(), ...sparks]);
+      newSparks = [sparkDraft.trim(), ...sparks];
+      newIdx = 0;
+      setSparks(newSparks);
       setSparkIndex(0);
     } else {
-      setSparks(prev =>
-        prev.map((s, idx) => (idx === sparkIndex ? sparkDraft.trim() : s)),
-      );
+      newSparks = sparks.map((s, idx) => (idx === sparkIndex ? sparkDraft.trim() : s));
+      setSparks(newSparks);
     }
     setIsEditingSpark(false);
+
+    if (account?.id) {
+      try {
+        await upsertCoupleStatus(account.id, {
+          sparks: newSparks,
+          spark_index: newIdx,
+        });
+      } catch (err) {
+        console.warn('Error saving sparks list:', err);
+      }
+    }
+  };
+
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const isPartnerPending =
+    !account.partnerTwo ||
+    account.partnerTwo === 'Pendiente' ||
+    account.partnerTwo === 'Pareja';
+
+  const handleShareCode = async () => {
+    try {
+      await Share.share({
+        message: `¡Hola mi amor! Descarga nuestra app Cómplices y usa nuestro código privado: ${account.coupleCode} para que conectemos nuestros celulares 💕`,
+      });
+    } catch (err) {
+      console.warn('Share error:', err);
+    }
+  };
+
+  const handleRegenerateCode = async () => {
+    if (!account.id) return;
+    setGeneratingCode(true);
+    try {
+      const newCode = await generateNewCoupleCode(account.id);
+      onUpdateAccount({...account, coupleCode: newCode});
+      Alert.alert('Nuevo Código Generado', `Tu nuevo código de vinculación es:\n${newCode}`);
+    } catch (err) {
+      console.warn('Generate error:', err);
+      Alert.alert('Error', 'No se pudo generar nuevo código.');
+    } finally {
+      setGeneratingCode(false);
+    }
   };
 
   return (
@@ -116,16 +213,56 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             Desde: {account.anniversaryDate} • #{account.coupleCode}
           </Text>
         </View>
-        <TouchableOpacity
-          activeOpacity={0.85}
-          onPress={onLogoSecretTap}
-          style={styles.miniLogoBadge}>
-          <Image
-            source={require('../assets/logo.png')}
-            style={styles.miniLogo}
-            resizeMode="contain"
-          />
-        </TouchableOpacity>
+      </View>
+
+      {/* Tarjeta de Vinculación de Pareja */}
+      <View style={[styles.pairingCard, isPartnerPending && styles.pairingCardUrgent]}>
+        <View style={styles.pairingHeaderRow}>
+          <Text style={styles.pairingOverline}>
+            {isPartnerPending ? '✦ VINCULAR A TU PAREJA' : '✦ ESPACIO DE PAREJA CONECTADO'}
+          </Text>
+          <View style={[styles.statusBadge, !isPartnerPending && styles.statusBadgeDone]}>
+            <Text style={styles.statusBadgeText}>
+              {isPartnerPending ? '⏳ Esperando a tu pareja' : `✓ ${account.partnerTwo}`}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.pairingBodyText}>
+          {isPartnerPending
+            ? 'Para conectar el celular de tu pareja, dale este código. Ella/Él solo debe abrir la app e ingresar con el código:'
+            : 'Tu pareja ya está conectada a este espacio. Ambos comparten este código privado:'}
+        </Text>
+
+        <View style={styles.pairingCodeContainer}>
+          <Text style={styles.pairingCodeValue}>{account.coupleCode}</Text>
+          {isPartnerPending ? (
+            <View style={styles.pairingActionsRow}>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                style={styles.pairingShareBtn}
+                onPress={handleShareCode}>
+                <Text style={styles.pairingShareBtnText}>Compartir por WhatsApp ✦</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.82}
+                disabled={generatingCode}
+                style={styles.pairingRegenBtn}
+                onPress={handleRegenerateCode}>
+                <Text style={styles.pairingRegenBtnText}>
+                  {generatingCode ? '...' : 'Generar Nuevo ↻'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={{alignItems: 'center', marginTop: 4}}>
+              <Text style={{color: COLORS.goldLight, fontSize: 11, fontWeight: '700'}}>
+                🔒 Espacio exclusivo y sellado entre {account.partnerOne} y {account.partnerTwo}
+              </Text>
+            </View>
+          )}
+        </View>
       </View>
 
       {/* Tarjeta Principal: Contador de Tiempo Juntos (Editable) */}
@@ -216,7 +353,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             return (
               <TouchableOpacity
                 key={m.id}
-                onPress={() => setSelectedMood(m.id)}
+                onPress={() => handleSelectMood(m.id)}
                 style={[styles.moodCard, active && styles.moodCardActive]}>
                 <Text style={styles.moodEmoji}>{m.emoji}</Text>
                 <Text
@@ -356,6 +493,106 @@ const styles = StyleSheet.create({
   miniLogo: {
     width: 40,
     height: 40,
+  },
+  pairingCard: {
+    backgroundColor: COLORS.wineVelvet,
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: COLORS.gold,
+    marginBottom: 16,
+    shadowColor: COLORS.gold,
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  pairingCardUrgent: {
+    borderColor: COLORS.goldLight,
+    backgroundColor: 'rgba(60, 14, 22, 0.95)',
+  },
+  pairingHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  pairingOverline: {
+    color: COLORS.goldLight,
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.3,
+  },
+  statusBadge: {
+    backgroundColor: COLORS.maroon,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.taupe,
+  },
+  statusBadgeDone: {
+    borderColor: COLORS.goldLight,
+    backgroundColor: 'rgba(212, 175, 90, 0.25)',
+  },
+  statusBadgeText: {
+    color: COLORS.cream,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  pairingBodyText: {
+    color: COLORS.taupe,
+    fontSize: 11.5,
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  pairingCodeContainer: {
+    backgroundColor: COLORS.wineDeep,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+    alignItems: 'center',
+  },
+  pairingCodeValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.creamLight,
+    letterSpacing: 3,
+    marginBottom: 10,
+  },
+  pairingActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    width: '100%',
+  },
+  pairingShareBtn: {
+    flex: 1.4,
+    backgroundColor: COLORS.gold,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pairingShareBtnText: {
+    color: COLORS.wineDeep,
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  pairingRegenBtn: {
+    flex: 1,
+    backgroundColor: COLORS.maroon,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+  },
+  pairingRegenBtnText: {
+    color: COLORS.goldLight,
+    fontSize: 11,
+    fontWeight: '700',
   },
   counterCard: {
     backgroundColor: COLORS.wineVelvet,

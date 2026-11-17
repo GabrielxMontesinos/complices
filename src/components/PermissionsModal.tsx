@@ -34,9 +34,7 @@ export const PermissionsModal: React.FC<PermissionsModalProps> = ({
 
           <Text style={styles.title}>Permisos de Galería y Alertas</Text>
           <Text style={styles.desc}>
-            Autoriza el acceso a tu galería para enviar fotos en el chat y
-            administrar tus notitas de amor, y activa las notificaciones para
-            recibir retos y mensajes en tu celular.
+            Autoriza el acceso a tu galería para sincronizar fotos en tu espacio íntimo, y activa la lectura y envío de notificaciones para estar al tanto de cada mensaje.
           </Text>
 
           <View style={styles.permBox}>

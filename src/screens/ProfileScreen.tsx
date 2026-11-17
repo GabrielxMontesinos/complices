@@ -7,9 +7,12 @@ import {
   Image,
   TouchableOpacity,
   TextInput,
+  Share,
+  Alert,
 } from 'react-native';
 import {COLORS} from '../theme/colors';
 import {CoupleAccount} from '../data/assignedUsers';
+import {generateNewCoupleCode} from '../lib/supabase';
 
 interface ProfileScreenProps {
   account: CoupleAccount;
@@ -32,6 +35,33 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     account.anniversaryDate,
   );
   const [coupleCode, setCoupleCode] = useState(account.coupleCode);
+  const [generatingCode, setGeneratingCode] = useState(false);
+
+  const handleShareCode = async () => {
+    try {
+      await Share.share({
+        message: `¡Hola amor! Descarga nuestra app Cómplices, selecciona 'Vincular con Código' e ingresa nuestro código privado: ${account.coupleCode} para que conectemos nuestros celulares 💕`,
+      });
+    } catch (err) {
+      console.warn('Share error:', err);
+    }
+  };
+
+  const handleRegenerateCode = async () => {
+    if (!account.id) return;
+    setGeneratingCode(true);
+    try {
+      const newCode = await generateNewCoupleCode(account.id);
+      setCoupleCode(newCode);
+      onUpdateAccount({...account, coupleCode: newCode});
+      Alert.alert('Nuevo Código Generado', `Tu nuevo código de vinculación es:\n${newCode}`);
+    } catch (err) {
+      console.warn('Generate error:', err);
+      Alert.alert('Error', 'No se pudo generar nuevo código.');
+    } finally {
+      setGeneratingCode(false);
+    }
+  };
 
   const handleSave = () => {
     onUpdateAccount({
@@ -70,6 +100,55 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             CÓDIGO DE PAREJA: {account.coupleCode}
           </Text>
         </View>
+
+        <View style={styles.codeActionsRow}>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={styles.codeShareBtn}
+            onPress={handleShareCode}>
+            <Text style={styles.codeShareBtnText}>Compartir por WhatsApp ✦</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.8}
+            disabled={generatingCode}
+            style={styles.codeRegenBtn}
+            onPress={handleRegenerateCode}>
+            <Text style={styles.codeRegenBtnText}>
+              {generatingCode ? '...' : 'Nuevo Código ↻'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Identidad en este teléfono */}
+      <View style={styles.deviceCard}>
+        <Text style={styles.sectionHeader}>TU IDENTIDAD EN ESTE CELULAR</Text>
+        <Text style={styles.deviceSubtitle}>
+          Mensajes y planes se firman a nombre de:
+        </Text>
+        <View style={styles.deviceRow}>
+          <View style={styles.currentNameBadge}>
+            <Text style={styles.currentNameText}>
+              👤 {account.myRole === 'partnerTwo' ? account.partnerTwo : account.partnerOne}
+            </Text>
+          </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            style={styles.switchRoleBtn}
+            onPress={() => {
+              const newRole =
+                account.myRole === 'partnerTwo' ? 'partnerOne' : 'partnerTwo';
+              onUpdateAccount({...account, myRole: newRole});
+            }}>
+            <Text style={styles.switchRoleBtnText}>
+              Probar como {account.myRole === 'partnerTwo' ? account.partnerOne : account.partnerTwo} ⇄
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.deviceHint}>
+          ✦ Para conectar a tu pareja, pídele que descargue la app, seleccione "Vincular con Código" e ingrese este código: {account.coupleCode}.
+        </Text>
       </View>
 
       {/* Detalles de la Cuenta Asignada / Edición */}
@@ -224,6 +303,94 @@ const styles = StyleSheet.create({
     fontSize: 10.5,
     fontWeight: '800',
     letterSpacing: 0.8,
+  },
+  codeActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    width: '100%',
+  },
+  codeShareBtn: {
+    flex: 1.3,
+    backgroundColor: COLORS.gold,
+    borderRadius: 12,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  codeShareBtnText: {
+    color: COLORS.wineDeep,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  codeRegenBtn: {
+    flex: 1,
+    backgroundColor: COLORS.wineDeep,
+    borderRadius: 12,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.goldMuted,
+  },
+  codeRegenBtnText: {
+    color: COLORS.goldLight,
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  deviceCard: {
+    backgroundColor: COLORS.wineVelvet,
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.gold,
+    marginBottom: 16,
+  },
+  deviceSubtitle: {
+    color: COLORS.taupe,
+    fontSize: 12,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  deviceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 8,
+  },
+  currentNameBadge: {
+    backgroundColor: COLORS.wineDeep,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.goldLight,
+  },
+  currentNameText: {
+    color: COLORS.cream,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  switchRoleBtn: {
+    backgroundColor: COLORS.maroon,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.taupe,
+  },
+  switchRoleBtnText: {
+    color: COLORS.goldLight,
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  deviceHint: {
+    color: COLORS.goldLight,
+    fontSize: 11,
+    lineHeight: 16,
+    opacity: 0.85,
+    marginTop: 4,
   },
   infoCard: {
     backgroundColor: COLORS.wineVelvet,

@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -11,10 +11,17 @@ import {
 import {COLORS} from '../theme/colors';
 import {CoupleAccount} from '../data/assignedUsers';
 import {GalleryPhotoItem} from '../components/SecretVaultModal';
+import {
+  supabase,
+  fetchChatMessages,
+  insertChatMessage,
+  deleteChatMessageFromDb,
+  SupabaseChatMessage,
+} from '../lib/supabase';
 
 export interface ChatMessage {
   id: string;
-  sender: 'me' | 'partner';
+  sender: 'partnerOne' | 'partnerTwo' | 'me' | 'partner' | string;
   text: string;
   time: string;
   photoTitle?: string;
@@ -40,46 +47,103 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   galleryPhotos = [],
   externalMessages = [],
 }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'c1',
-      sender: 'partner',
-      text: 'Hola mi amor, acabo de revisar nuestra lista de deseos para esta semana ✦',
-      time: '19:40',
-    },
-    {
-      id: 'c2',
-      sender: 'me',
-      text: '¡Me encanta! Elige el que más te guste y yo preparo la sorpresa ✦',
-      time: '19:42',
-    },
-    {
-      id: 'c3',
-      sender: 'partner',
-      text: 'Trato hecho. Nos vemos esta noche ♡',
-      time: '19:45',
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  // Identidad fija de este teléfono (Alejandro o Valentina)
+  const [deviceRole, setDeviceRole] = useState<'partnerOne' | 'partnerTwo'>(
+    account.myRole || 'partnerOne',
+  );
+
+  const myRole = deviceRole;
+  const partnerRole = myRole === 'partnerOne' ? 'partnerTwo' : 'partnerOne';
+  const myName = myRole === 'partnerOne' ? account.partnerOne : account.partnerTwo;
+  const partnerName = myRole === 'partnerOne' ? account.partnerTwo : account.partnerOne;
 
   const [inputText, setInputText] = useState('');
-  const [activeSender, setActiveSender] = useState<'me' | 'partner'>('me');
   const [showPhotoPicker, setShowPhotoPicker] = useState(false);
 
-  const speakingName =
-    activeSender === 'me' ? account.partnerOne : account.partnerTwo;
-  const receiverName =
-    activeSender === 'me' ? account.partnerTwo : account.partnerOne;
+  // Cargar mensajes desde Supabase y suscribirse en tiempo real
+  useEffect(() => {
+    if (!account?.id) {
+      return;
+    }
+
+    const loadRemoteMessages = async () => {
+      try {
+        const remote = await fetchChatMessages(account.id!);
+        if (remote && remote.length > 0) {
+          setMessages(
+            remote.map((m: SupabaseChatMessage) => ({
+              id: m.id,
+              sender: m.sender || 'partnerOne',
+              text: m.text,
+              time: m.time_label || 'Ahora',
+              photoTitle: m.photo_title || undefined,
+              photoNote: m.photo_note || undefined,
+            })),
+          );
+        }
+      } catch (err) {
+        console.warn('Error loading chat from Supabase:', err);
+      }
+    };
+
+    loadRemoteMessages();
+
+    // Canal Realtime de Supabase
+    const channel = supabase
+      .channel(`chat_messages:${account.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `couple_id=eq.${account.id}`,
+        },
+        payload => {
+          if (payload.eventType === 'INSERT') {
+            const newRow = payload.new as SupabaseChatMessage;
+            setMessages(prev => {
+              if (prev.some(m => m.id === newRow.id)) {
+                return prev;
+              }
+              return [
+                ...prev,
+                {
+                  id: newRow.id,
+                  sender: newRow.sender || 'partnerTwo',
+                  text: newRow.text,
+                  time: newRow.time_label || 'Ahora',
+                  photoTitle: newRow.photo_title || undefined,
+                  photoNote: newRow.photo_note || undefined,
+                },
+              ];
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const oldId = payload.old.id;
+            setMessages(prev => prev.filter(m => m.id !== oldId));
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [account?.id]);
 
   const allMessages = [...messages, ...externalMessages];
 
-  const sendMessage = (customText?: string) => {
+  const sendMessage = async (customText?: string) => {
     const content = (customText ?? inputText).trim();
     if (!content) {
       return;
     }
+    const tempId = Date.now().toString();
     const newMsg: ChatMessage = {
-      id: Date.now().toString(),
-      sender: activeSender,
+      id: tempId,
+      sender: myRole,
       text: content,
       time: 'Ahora',
     };
@@ -87,44 +151,96 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
     if (!customText) {
       setInputText('');
     }
+
+    if (account?.id) {
+      try {
+        const saved = await insertChatMessage({
+          couple_id: account.id,
+          sender: myRole,
+          text: content,
+          time_label: 'Ahora',
+        });
+        if (saved && saved.id) {
+          setMessages(prev =>
+            prev.map(m => (m.id === tempId ? {...m, id: saved.id} : m)),
+          );
+        }
+      } catch (e) {
+        console.warn('Error saving message in Supabase:', e);
+      }
+    }
   };
 
-  const sendPhotoFromGallery = (photo: GalleryPhotoItem) => {
+  const sendPhotoFromGallery = async (photo: GalleryPhotoItem) => {
+    const tempId = Date.now().toString();
+    const photoNote = photo.loveNote;
+    const photoTitle = photo.title;
+    const msgText = photoNote || `✦ Foto compartida: ${photoTitle}`;
+
     const newMsg: ChatMessage = {
-      id: Date.now().toString(),
-      sender: activeSender,
-      text: photo.loveNote || `✦ Foto compartida: ${photo.title}`,
+      id: tempId,
+      sender: myRole,
+      text: msgText,
       time: 'Ahora',
-      photoTitle: photo.title,
-      photoNote: photo.loveNote,
+      photoTitle,
+      photoNote,
     };
     setMessages(prev => [...prev, newMsg]);
     setShowPhotoPicker(false);
+
+    if (account?.id) {
+      try {
+        const saved = await insertChatMessage({
+          couple_id: account.id,
+          sender: myRole,
+          text: msgText,
+          time_label: 'Ahora',
+          photo_title: photoTitle,
+          photo_note: photoNote,
+        });
+        if (saved && saved.id) {
+          setMessages(prev =>
+            prev.map(m => (m.id === tempId ? {...m, id: saved.id} : m)),
+          );
+        }
+      } catch (e) {
+        console.warn('Error saving photo message in Supabase:', e);
+      }
+    }
   };
 
-  const deleteMessage = (id: string) => {
+  const deleteMessage = async (id: string) => {
     setMessages(prev => prev.filter(m => m.id !== id));
+    if (account?.id) {
+      try {
+        await deleteChatMessageFromDb(id);
+      } catch (e) {
+        console.warn('Error deleting message from Supabase:', e);
+      }
+    }
+  };
+
+  const toggleTestRole = () => {
+    setDeviceRole(prev => (prev === 'partnerOne' ? 'partnerTwo' : 'partnerOne'));
   };
 
   return (
     <View style={styles.container}>
-      {/* Cabecera del Chat */}
+      {/* Cabecera del Chat: Muestra a tu pareja en el otro celular */}
       <View style={styles.chatHeader}>
         <View style={styles.avatarCircle}>
           <Text style={styles.avatarInitial}>
-            {receiverName.charAt(0).toUpperCase()}
+            {partnerName.charAt(0).toUpperCase()}
           </Text>
         </View>
         <View style={styles.headerInfo}>
-          <Text style={styles.partnerName}>{receiverName}</Text>
+          <Text style={styles.partnerName}>{partnerName}</Text>
           <Text style={styles.onlineStatus}>● En línea en su espacio privado</Text>
         </View>
         <TouchableOpacity
           style={styles.whisperChip}
-          onPress={() =>
-            setActiveSender(activeSender === 'me' ? 'partner' : 'me')
-          }>
-          <Text style={styles.whisperText}>Soy: {speakingName} ⇄</Text>
+          onPress={toggleTestRole}>
+          <Text style={styles.whisperText}>Tú: {myName} ⇄</Text>
         </TouchableOpacity>
       </View>
 
@@ -134,7 +250,10 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
         contentContainerStyle={styles.messagesContent}
         showsVerticalScrollIndicator={false}>
         {allMessages.map(msg => {
-          const isMe = msg.sender === 'me';
+          const isMe =
+            msg.sender === myRole ||
+            (myRole === 'partnerOne' && msg.sender === 'me') ||
+            (myRole === 'partnerTwo' && msg.sender === 'partner');
           return (
             <TouchableOpacity
               key={msg.id}
@@ -213,7 +332,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           </TouchableOpacity>
           <TextInput
             style={styles.chatInput}
-            placeholder="Escribe un mensaje o envía foto..."
+            placeholder={`Escribe un mensaje a ${partnerName}...`}
             placeholderTextColor={COLORS.textMuted}
             value={inputText}
             onChangeText={setInputText}

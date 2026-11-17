@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Cómplices VIP — Private Couple Suite</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -477,10 +478,16 @@
       photoNoteDraft: '',
       photoAuthorDraft: '',
       // Login state
+      authMode: 'credentials', // 'credentials' | 'code'
       loginUser: '',
       loginPass: '',
       showPass: false,
       loginError: '',
+      coupleCodeInput: '',
+      partnerStep: 'enterCode', // 'enterCode' | 'fillProfile'
+      matchedCouple: null,
+      partnerTwoName: '',
+      partnerTwoNickname: '',
       // Home state
       selectedMood: 'complice',
       sparkIndex: 0,
@@ -599,6 +606,176 @@
           if (found) state.currentAccount = found;
         }
       } catch (e) {}
+    }
+
+    const SUPABASE_URL = 'https://hfivvqxrqxiijuskqowe.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmaXZ2cXhycXhpaWp1c2txb3dlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ4MDAwOTcsImV4cCI6MjExMDM3NjA5N30.F9BwrkNOEQmbfG3iFOv-tkDQzyxgN3Cb55A2o-FgP58';
+    let supabaseClient = null;
+    let realtimeChannel = null;
+
+    function getSupabase() {
+      if (!supabaseClient && window.supabase && window.supabase.createClient) {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      }
+      return supabaseClient;
+    }
+
+    async function syncAllFromSupabase() {
+      const sb = getSupabase();
+      const acc = state.currentAccount;
+      if (!sb || !acc) return;
+
+      try {
+        if (!acc.id) {
+          const { data: coupleRow } = await sb
+            .from('couples')
+            .select('*')
+            .ilike('username', acc.username)
+            .maybeSingle();
+          if (coupleRow) {
+            acc.id = coupleRow.id;
+            acc.coupleNames = coupleRow.couple_names;
+            acc.partnerOne = coupleRow.partner_one;
+            acc.partnerTwo = coupleRow.partner_two;
+            acc.anniversaryDate = coupleRow.anniversary_date;
+            acc.coupleCode = coupleRow.couple_code;
+            acc.planTier = coupleRow.plan_tier;
+            render();
+          }
+        }
+
+        if (!acc.id) return;
+        const coupleId = acc.id;
+
+        // 1. Mensajes de Chat
+        const { data: remoteMsgs } = await sb
+          .from('chat_messages')
+          .select('*')
+          .eq('couple_id', coupleId)
+          .order('created_at', { ascending: true });
+
+        if (remoteMsgs && remoteMsgs.length > 0) {
+          state.messages = remoteMsgs.map(m => ({
+            id: m.id,
+            sender: m.sender,
+            text: m.text,
+            time: m.time_label || 'Ahora',
+            photoTitle: m.photo_title,
+            photoNote: m.photo_note,
+          }));
+          render();
+        }
+
+        // Suscribirse a Realtime para el chat
+        if (realtimeChannel) {
+          sb.removeChannel(realtimeChannel);
+        }
+        realtimeChannel = sb
+          .channel('chat_messages_' + coupleId)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'chat_messages',
+              filter: 'couple_id=eq.' + coupleId,
+            },
+            payload => {
+              if (payload.eventType === 'INSERT') {
+                const row = payload.new;
+                if (!state.messages.some(m => m.id === row.id)) {
+                  state.messages.push({
+                    id: row.id,
+                    sender: row.sender,
+                    text: row.text,
+                    time: row.time_label || 'Ahora',
+                    photoTitle: row.photo_title,
+                    photoNote: row.photo_note,
+                  });
+                  render();
+                }
+              } else if (payload.eventType === 'DELETE') {
+                state.messages = state.messages.filter(m => m.id !== payload.old.id);
+                render();
+              }
+            }
+          )
+          .subscribe();
+
+        // 2. Planes
+        const { data: remotePlans } = await sb
+          .from('plans')
+          .select('*')
+          .eq('couple_id', coupleId)
+          .order('created_at', { ascending: false });
+
+        if (remotePlans && remotePlans.length > 0) {
+          state.plans = remotePlans.map(p => ({
+            id: p.id,
+            title: p.title,
+            category: p.category,
+            completed: p.completed,
+          }));
+          render();
+        }
+
+        // 3. Recuerdos / Cartas
+        const { data: remoteNotes } = await sb
+          .from('memories')
+          .select('*')
+          .eq('couple_id', coupleId)
+          .order('created_at', { ascending: false });
+
+        if (remoteNotes && remoteNotes.length > 0) {
+          state.notes = remoteNotes.map(n => ({
+            id: n.id,
+            author: n.author,
+            date: n.date_str,
+            title: n.title,
+            content: n.content,
+          }));
+          render();
+        }
+
+        // 4. Bóveda Secreta / Fotos
+        const { data: remoteVault } = await sb
+          .from('vault_photos')
+          .select('*')
+          .eq('couple_id', coupleId)
+          .order('created_at', { ascending: false });
+
+        if (remoteVault && remoteVault.length > 0) {
+          state.phoneGallery = remoteVault.map(v => ({
+            id: v.id,
+            title: v.title,
+            album: v.album,
+            date: v.date_str,
+            loveNote: v.love_note,
+            author: v.author,
+          }));
+          render();
+        }
+
+        // 5. Estado y Chispas
+        const { data: statusRow } = await sb
+          .from('couple_status')
+          .select('*')
+          .eq('couple_id', coupleId)
+          .maybeSingle();
+
+        if (statusRow) {
+          if (statusRow.selected_mood) state.selectedMood = statusRow.selected_mood;
+          if (Array.isArray(statusRow.sparks) && statusRow.sparks.length > 0) {
+            state.sparksList = statusRow.sparks;
+          }
+          if (typeof statusRow.spark_index === 'number') {
+            state.sparkIndex = statusRow.spark_index;
+          }
+          render();
+        }
+      } catch (err) {
+        console.warn('Error syncing with Supabase in web-preview:', err);
+      }
     }
 
     function initNotesForAccount(acc) {
@@ -1300,72 +1477,178 @@
 
           <!-- Tarjeta Minimalista de Acceso -->
           <div class="rounded-[24px] p-5 shadow-2xl vip-glass-card">
-            <div class="flex items-center justify-between mb-1">
-              <h2 class="font-editorial font-bold" style="font-size:17px; color:${COLORS.creamLight};">Acceso Exclusivo</h2>
-              <span class="px-2 py-0.5 rounded-full font-bold tracking-wider uppercase" style="font-size:8.5px; background:rgba(212,175,90,0.16); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.45);">VIP SUITE</span>
+            <!-- Selector de Modo: Titular vs Pareja -->
+            <div class="flex rounded-xl p-1 mb-4" style="background:rgba(25,4,7,0.7); border:1px solid rgba(212,175,90,0.25);">
+              <button
+                onclick="state.authMode = 'credentials'; state.loginError = ''; render();"
+                class="flex-1 py-1.5 rounded-lg font-bold text-center transition"
+                style="font-size:10.5px; ${state.authMode === 'credentials' ? `background:${COLORS.gold}; color:${COLORS.wineDeep};` : `color:${COLORS.taupe};`}">
+                Soy el Titular (Clave)
+              </button>
+              <button
+                onclick="state.authMode = 'code'; state.loginError = ''; render();"
+                class="flex-1 py-1.5 rounded-lg font-bold text-center transition"
+                style="font-size:10.5px; ${state.authMode === 'code' ? `background:${COLORS.gold}; color:${COLORS.wineDeep};` : `color:${COLORS.taupe};`}">
+                Vincular con Código
+              </button>
             </div>
-            <p class="leading-relaxed mb-4" style="font-size:11px; color:${COLORS.taupe};">
-              Ingresa tus credenciales privadas para entrar a su santuario digital.
-            </p>
 
-            <!-- Usuario -->
-            <div class="mb-3">
-              <label class="block font-bold tracking-[1.4px] uppercase mb-1" style="font-size:9px; color:${COLORS.goldLight};">USUARIO ASIGNADO</label>
-              <div class="flex items-center rounded-xl px-3" style="background:rgba(16,3,5,0.72); border: 1px solid rgba(212,175,90,0.35);">
-                <input
-                  type="text"
-                  placeholder="pareja.vip"
-                  value="${state.loginUser}"
-                  oninput="state.loginUser = this.value"
-                  class="w-full h-[38px] bg-transparent outline-none font-semibold"
-                  style="font-size:12px; color:${COLORS.creamLight};"
-                />
+            ${state.authMode === 'credentials' ? `
+              <!-- MODO TITULAR -->
+              <div class="flex items-center justify-between mb-1">
+                <h2 class="font-editorial font-bold" style="font-size:17px; color:${COLORS.creamLight};">Acceso de Titular</h2>
+                <span class="px-2 py-0.5 rounded-full font-bold tracking-wider uppercase" style="font-size:8.5px; background:rgba(212,175,90,0.16); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.45);">VIP SUITE</span>
               </div>
-            </div>
+              <p class="leading-relaxed mb-4" style="font-size:11px; color:${COLORS.taupe};">
+                Ingresa con tu usuario y clave creados por administración para acceder a tu santuario privado.
+              </p>
 
-            <!-- Contraseña -->
-            <div class="mb-3.5">
-              <label class="block font-bold tracking-[1.4px] uppercase mb-1" style="font-size:9px; color:${COLORS.goldLight};">CLAVE DE ACCESO</label>
-              <div class="flex items-center rounded-xl px-3" style="background:rgba(16,3,5,0.72); border: 1px solid rgba(212,175,90,0.35);">
-                <input
-                  type="${state.showPass ? 'text' : 'password'}"
-                  placeholder="••••••••"
-                  value="${state.loginPass}"
-                  oninput="state.loginPass = this.value"
-                  onkeydown="if(event.key==='Enter') handleLogin()"
-                  class="w-full h-[38px] bg-transparent outline-none font-semibold pr-2"
-                  style="font-size:12px; color:${COLORS.creamLight};"
-                />
-                <button onclick="state.showPass = !state.showPass; render();" class="px-2 py-0.5 rounded font-bold" style="font-size:10px; color:${COLORS.gold};">
-                  ${state.showPass ? 'Ocultar' : 'Ver'}
+              <!-- Usuario -->
+              <div class="mb-3">
+                <label class="block font-bold tracking-[1.4px] uppercase mb-1" style="font-size:9px; color:${COLORS.goldLight};">USUARIO ASIGNADO</label>
+                <div class="flex items-center rounded-xl px-3" style="background:rgba(16,3,5,0.72); border: 1px solid rgba(212,175,90,0.35);">
+                  <input
+                    type="text"
+                    placeholder="pareja.vip"
+                    value="${state.loginUser}"
+                    oninput="state.loginUser = this.value"
+                    class="w-full h-[38px] bg-transparent outline-none font-semibold"
+                    style="font-size:12px; color:${COLORS.creamLight};"
+                  />
+                </div>
+              </div>
+
+              <!-- Contraseña -->
+              <div class="mb-3.5">
+                <label class="block font-bold tracking-[1.4px] uppercase mb-1" style="font-size:9px; color:${COLORS.goldLight};">CLAVE DE ACCESO</label>
+                <div class="flex items-center rounded-xl px-3" style="background:rgba(16,3,5,0.72); border: 1px solid rgba(212,175,90,0.35);">
+                  <input
+                    type="${state.showPass ? 'text' : 'password'}"
+                    placeholder="••••••••"
+                    value="${state.loginPass}"
+                    oninput="state.loginPass = this.value"
+                    onkeydown="if(event.key==='Enter') handleLogin()"
+                    class="w-full h-[38px] bg-transparent outline-none font-semibold pr-2"
+                    style="font-size:12px; color:${COLORS.creamLight};"
+                  />
+                  <button onclick="state.showPass = !state.showPass; render();" class="px-2 py-0.5 rounded font-bold" style="font-size:10px; color:${COLORS.gold};">
+                    ${state.showPass ? 'Ocultar' : 'Ver'}
+                  </button>
+                </div>
+              </div>
+
+              ${state.loginError ? `
+                <div class="rounded-xl p-2 mb-3 font-semibold" style="font-size:10.5px; background:rgba(224,108,117,0.14); border-left: 2.5px solid ${COLORS.danger}; color:#F5B7BC;">
+                  ${state.loginError}
+                </div>
+              ` : ''}
+
+              <button onclick="handleLogin()" class="w-full h-[42px] rounded-xl font-bold tracking-wider uppercase shadow-lg transition active:scale-[0.99]" style="font-size:11.5px; background: linear-gradient(135deg, #D4AF5A, #B38A35); color:${COLORS.wineDeep};">
+                Entrar como Titular
+              </button>
+
+              <!-- Cuentas de prueba rápidas -->
+              <div class="mt-3.5 pt-3 text-center" style="border-top: 1px solid rgba(212,175,90,0.2);">
+                <div class="font-medium mb-1.5" style="font-size:10px; color:${COLORS.taupe};">
+                  Seleccionar credencial de prueba:
+                </div>
+                <div class="flex justify-center gap-2">
+                  <button onclick="fillDemo(0)" class="px-3 py-1 rounded-full font-bold transition hover:opacity-90" style="font-size:10px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
+                    pareja.vip • amor2026
+                  </button>
+                  <button onclick="fillDemo(1)" class="px-3 py-1 rounded-full font-bold transition hover:opacity-90" style="font-size:10px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
+                    admin • 123456
+                  </button>
+                </div>
+              </div>
+            ` : state.partnerStep === 'enterCode' ? `
+              <!-- MODO PAREJA: PASO 1 - CÓDIGO -->
+              <div class="flex items-center justify-between mb-1">
+                <h2 class="font-editorial font-bold" style="font-size:17px; color:${COLORS.creamLight};">Vincúlate con tu Pareja</h2>
+                <span class="px-2 py-0.5 rounded-full font-bold tracking-wider uppercase" style="font-size:8.5px; background:rgba(212,175,90,0.16); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.45);">INVITACIÓN</span>
+              </div>
+              <p class="leading-relaxed mb-4" style="font-size:11px; color:${COLORS.taupe};">
+                Ingresa el código que te compartió tu pareja desde su aplicación para conectar sus dispositivos.
+              </p>
+
+              <div class="mb-3.5">
+                <label class="block font-bold tracking-[1.4px] uppercase mb-1" style="font-size:9px; color:${COLORS.goldLight};">CÓDIGO DE PAREJA</label>
+                <div class="flex items-center rounded-xl px-3" style="background:rgba(16,3,5,0.72); border: 1px solid rgba(212,175,90,0.35);">
+                  <input
+                    type="text"
+                    placeholder="ALMA-2026"
+                    value="${state.coupleCodeInput}"
+                    oninput="state.coupleCodeInput = this.value.toUpperCase()"
+                    onkeydown="if(event.key==='Enter') handleVerifyCodeWeb()"
+                    class="w-full h-[38px] bg-transparent outline-none font-bold text-center uppercase tracking-widest"
+                    style="font-size:14px; color:${COLORS.creamLight};"
+                  />
+                </div>
+              </div>
+
+              ${state.loginError ? `
+                <div class="rounded-xl p-2 mb-3 font-semibold" style="font-size:10.5px; background:rgba(224,108,117,0.14); border-left: 2.5px solid ${COLORS.danger}; color:#F5B7BC;">
+                  ${state.loginError}
+                </div>
+              ` : ''}
+
+              <button onclick="handleVerifyCodeWeb()" class="w-full h-[42px] rounded-xl font-bold tracking-wider uppercase shadow-lg transition active:scale-[0.99]" style="font-size:11.5px; background: linear-gradient(135deg, #D4AF5A, #B38A35); color:${COLORS.wineDeep};">
+                Verificar Código y Continuar →
+              </button>
+
+              <div class="mt-3.5 pt-3 text-center" style="border-top: 1px solid rgba(212,175,90,0.2);">
+                <div class="font-medium mb-1.5" style="font-size:10px; color:${COLORS.taupe};">Códigos activos de prueba:</div>
+                <div class="flex justify-center gap-2">
+                  <button onclick="state.coupleCodeInput = 'ALMA-2026'; state.loginError = ''; render();" class="px-3 py-1 rounded-full font-bold" style="font-size:10px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
+                    ALMA-2026
+                  </button>
+                  <button onclick="state.coupleCodeInput = 'AMOR-7788'; state.loginError = ''; render();" class="px-3 py-1 rounded-full font-bold" style="font-size:10px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
+                    AMOR-7788
+                  </button>
+                </div>
+              </div>
+            ` : `
+              <!-- MODO PAREJA: PASO 2 - DATOS BÁSICOS -->
+              <div class="mb-2 text-center">
+                <span class="px-3 py-1 rounded-full font-bold tracking-wider uppercase text-center inline-block" style="font-size:9px; background:rgba(212,175,90,0.16); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.45);">
+                  ✦ ESPACIO DE ${state.matchedCouple?.partner_one?.toUpperCase() || 'TU PAREJA'}
+                </span>
+              </div>
+              <h2 class="font-editorial font-bold text-center mb-1" style="font-size:18px; color:${COLORS.creamLight};">¡Bienvenida/o!</h2>
+              <p class="leading-relaxed mb-4 text-center" style="font-size:11px; color:${COLORS.taupe};">
+                Tu pareja <strong style="color:${COLORS.goldLight};">${state.matchedCouple?.partner_one}</strong> ya te está esperando. Cuéntanos tu nombre para comenzar:
+              </p>
+
+              <div class="mb-3">
+                <label class="block font-bold tracking-[1.4px] uppercase mb-1" style="font-size:9px; color:${COLORS.goldLight};">TU NOMBRE</label>
+                <div class="flex items-center rounded-xl px-3" style="background:rgba(16,3,5,0.72); border: 1px solid rgba(212,175,90,0.35);">
+                  <input
+                    type="text"
+                    placeholder="Ej. Valentina"
+                    value="${state.partnerTwoName}"
+                    oninput="state.partnerTwoName = this.value"
+                    class="w-full h-[38px] bg-transparent outline-none font-semibold"
+                    style="font-size:12px; color:${COLORS.creamLight};"
+                  />
+                </div>
+              </div>
+
+              ${state.loginError ? `
+                <div class="rounded-xl p-2 mb-3 font-semibold" style="font-size:10.5px; background:rgba(224,108,117,0.14); border-left: 2.5px solid ${COLORS.danger}; color:#F5B7BC;">
+                  ${state.loginError}
+                </div>
+              ` : ''}
+
+              <button onclick="handleCompletePartnerWeb()" class="w-full h-[42px] rounded-xl font-bold tracking-wider uppercase shadow-lg transition active:scale-[0.99] mb-2" style="font-size:11.5px; background: linear-gradient(135deg, #D4AF5A, #B38A35); color:${COLORS.wineDeep};">
+                ¡Vincularnos y Entrar Juntos! 💕
+              </button>
+
+              <div class="text-center">
+                <button onclick="state.partnerStep = 'enterCode'; state.loginError = ''; render();" class="text-xs underline" style="color:${COLORS.taupe};">
+                  ← Usar otro código
                 </button>
               </div>
-            </div>
-
-            ${state.loginError ? `
-              <div class="rounded-xl p-2 mb-3 font-semibold" style="font-size:10.5px; background:rgba(224,108,117,0.14); border-left: 2.5px solid ${COLORS.danger}; color:#F5B7BC;">
-                ${state.loginError}
-              </div>
-            ` : ''}
-
-            <button onclick="handleLogin()" class="w-full h-[42px] rounded-xl font-bold tracking-wider uppercase shadow-lg transition active:scale-[0.99]" style="font-size:11.5px; background: linear-gradient(135deg, #D4AF5A, #B38A35); color:${COLORS.wineDeep};">
-              Entrar a Nuestro Espacio
-            </button>
-
-            <!-- Cuentas de prueba rápidas -->
-            <div class="mt-3.5 pt-3 text-center" style="border-top: 1px solid rgba(212,175,90,0.2);">
-              <div class="font-medium mb-1.5" style="font-size:10px; color:${COLORS.taupe};">
-                Seleccionar credencial asignada:
-              </div>
-              <div class="flex justify-center gap-2">
-                <button onclick="fillDemo(0)" class="px-3 py-1 rounded-full font-bold transition hover:opacity-90" style="font-size:10px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
-                  pareja.vip • amor2026
-                </button>
-                <button onclick="fillDemo(1)" class="px-3 py-1 rounded-full font-bold transition hover:opacity-90" style="font-size:10px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
-                  admin • 123456
-                </button>
-              </div>
-            </div>
+            `}
           </div>
 
           <div class="text-center px-4">
@@ -1397,7 +1680,7 @@
       render();
     }
 
-    function handleLogin() {
+    async function handleLogin() {
       const u = state.loginUser.trim().toLowerCase();
       const p = state.loginPass.trim();
       if (!u || !p) {
@@ -1405,6 +1688,44 @@
         render();
         return;
       }
+
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          const { data, error } = await sb
+            .from('couples')
+            .select('*')
+            .ilike('username', u)
+            .eq('password', p)
+            .maybeSingle();
+
+          if (data && !error) {
+            state.loginError = '';
+            state.currentAccount = {
+              id: data.id,
+              username: data.username,
+              password: p,
+              coupleNames: data.couple_names,
+              partnerOne: data.partner_one,
+              partnerTwo: data.partner_two,
+              anniversaryDate: data.anniversary_date,
+              coupleCode: data.couple_code,
+              planTier: data.plan_tier,
+            };
+            state.activeTab = 'inicio';
+            if (!state.permissionsAsked) {
+              state.showPermissionsModal = true;
+            }
+            savePersistedState();
+            render();
+            syncAllFromSupabase();
+            return;
+          }
+        } catch (err) {
+          console.warn('Supabase login error:', err);
+        }
+      }
+
       const found = ASSIGNED_ACCOUNTS.find(a => a.username.toLowerCase() === u && a.password === p);
       if (found) {
         state.loginError = '';
@@ -1416,9 +1737,139 @@
         }
         savePersistedState();
         render();
+        syncAllFromSupabase();
       } else {
         state.loginError = 'Credenciales no reconocidas.';
         render();
+      }
+    }
+
+    async function handleVerifyCodeWeb() {
+      const code = (state.coupleCodeInput || '').trim().toUpperCase();
+      if (!code) {
+        state.loginError = 'Por favor escribe el código de vinculación.';
+        render();
+        return;
+      }
+
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          const { data, error } = await sb
+            .from('couples')
+            .select('*')
+            .ilike('couple_code', code)
+            .maybeSingle();
+
+          if (data && !error) {
+            state.loginError = '';
+            state.matchedCouple = data;
+            state.partnerTwoName = (data.partner_two && data.partner_two !== 'Pendiente') ? data.partner_two : '';
+            state.partnerStep = 'fillProfile';
+            render();
+            return;
+          }
+        } catch (e) {
+          console.warn('Verify code error:', e);
+        }
+      }
+
+      const found = ASSIGNED_ACCOUNTS.find(a => a.coupleCode.toUpperCase() === code);
+      if (found) {
+        state.loginError = '';
+        state.matchedCouple = {
+          id: found.id || 'demo-1',
+          username: found.username,
+          couple_names: found.coupleNames,
+          partner_one: found.partnerOne,
+          partner_two: found.partnerTwo,
+          anniversary_date: found.anniversaryDate,
+          couple_code: found.coupleCode,
+          plan_tier: found.planTier,
+        };
+        state.partnerTwoName = found.partnerTwo;
+        state.partnerStep = 'fillProfile';
+        render();
+      } else {
+        state.loginError = 'Código no encontrado. Pídele a tu pareja que te comparta su código de vinculación.';
+        render();
+      }
+    }
+
+    async function handleCompletePartnerWeb() {
+      const name = (state.partnerTwoName || '').trim();
+      if (!name) {
+        state.loginError = 'Por favor ingresa tu nombre.';
+        render();
+        return;
+      }
+      const couple = state.matchedCouple;
+      if (!couple) return;
+
+      const coupleNames = `${couple.partner_one} & ${name}`;
+      const sb = getSupabase();
+      if (sb && couple.id) {
+        try {
+          await sb
+            .from('couples')
+            .update({ partner_two: name, couple_names: coupleNames })
+            .eq('id', couple.id);
+        } catch (e) {
+          console.warn('Error saving partnerTwo in Supabase:', e);
+        }
+      }
+
+      state.loginError = '';
+      state.currentAccount = {
+        id: couple.id,
+        username: couple.username,
+        password: couple.password || '',
+        coupleNames: coupleNames,
+        partnerOne: couple.partner_one,
+        partnerTwo: name,
+        anniversaryDate: couple.anniversary_date || '2024-02-14',
+        coupleCode: couple.couple_code,
+        planTier: couple.plan_tier || 'Edición Dorada Exclusiva',
+        myRole: 'partnerTwo',
+      };
+      state.activeTab = 'inicio';
+      savePersistedState();
+      render();
+      syncAllFromSupabase();
+      triggerVipNotification('VINCULACIÓN EXITOSA 💕', `¡Bienvenida/o! Espacio conectado con ${couple.partner_one}`, 'inicio');
+    }
+
+    async function handleRegenerateCodeWeb() {
+      const acc = state.currentAccount;
+      if (!acc || !acc.id) return;
+      const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+      const randLetters = Array.from({length: 4}, () => letters.charAt(Math.floor(Math.random() * letters.length))).join('');
+      const randDigits = Math.floor(1000 + Math.random() * 9000);
+      const newCode = `${randLetters}-${randDigits}`;
+
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          await sb.from('couples').update({ couple_code: newCode }).eq('id', acc.id);
+        } catch (e) {
+          console.warn('Regenerate code error:', e);
+        }
+      }
+      acc.coupleCode = newCode;
+      savePersistedState();
+      render();
+      triggerVipNotification('NUEVO CÓDIGO GENERADO ✨', `Tu nuevo código de vinculación es: ${newCode}`, 'inicio');
+    }
+
+    function handleShareCodeWeb() {
+      const acc = state.currentAccount;
+      if (!acc) return;
+      const msg = `¡Hola mi amor! Descarga nuestra app Cómplices, selecciona 'Vincular con Código' e ingresa nuestro código privado: ${acc.coupleCode} para conectarnos 💕`;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(msg);
+        triggerVipNotification('MENSAJE COPIADO AL PORTAPAPELES 📋', 'Pégalo en WhatsApp para enviárselo a tu pareja.', 'inicio');
+      } else {
+        prompt('Copia este mensaje para tu pareja:', msg);
       }
     }
 
@@ -1525,6 +1976,38 @@
               style="background:${COLORS.white}; border: 1.5px solid ${COLORS.gold}; box-shadow: 0 4px 16px rgba(0,0,0,0.45);"
               title="Toca 5 veces para abrir la Bóveda Secreta">
               ${renderLogoImg(38)}
+            </div>
+          </div>
+
+          <!-- Tarjeta de Vinculación de Pareja -->
+          <div class="rounded-[22px] p-4 mb-3.5 shadow-xl relative overflow-hidden vip-glass-card" style="border: 1.5px solid ${COLORS.gold};">
+            <div class="flex items-center justify-between mb-1">
+              <span class="font-bold tracking-[2px] uppercase inline-flex items-center gap-1" style="font-size:8.5px; color:${COLORS.goldLight};">
+                ${GOLD_ICONS.spark(10)} VINCULACIÓN DE PAREJA
+              </span>
+              <span class="px-2 py-0.5 rounded-full font-bold tracking-wider uppercase" style="font-size:8.5px; background:rgba(212,175,90,0.16); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.45);">
+                ${acc.partnerTwo && acc.partnerTwo !== 'Pendiente' ? `✓ ${acc.partnerTwo}` : '⏳ Esperando Pareja'}
+              </span>
+            </div>
+
+            <p class="leading-relaxed my-2" style="font-size:11px; color:${COLORS.taupe};">
+              ${acc.partnerTwo && acc.partnerTwo !== 'Pendiente'
+                ? 'Tu pareja ya está conectada. Ambos comparten este código privado:'
+                : 'Para vincular a tu pareja, compártele este código. Ella/Él solo debe abrir la app e ingresar con el código:'}
+            </p>
+
+            <div class="rounded-xl p-3 my-2 text-center" style="background:rgba(16,3,5,0.85); border: 1px solid rgba(212,175,90,0.35);">
+              <div class="font-editorial font-bold tracking-widest my-1" style="font-size:22px; color:${COLORS.creamLight};">
+                ${acc.coupleCode}
+              </div>
+              <div class="flex gap-2 mt-2">
+                <button onclick="handleShareCodeWeb()" class="flex-1 py-1.5 rounded-lg font-bold transition active:scale-95" style="font-size:10.5px; background:linear-gradient(135deg,#D4AF5A,#B38A35); color:${COLORS.wineDeep};">
+                  Compartir por WhatsApp ✦
+                </button>
+                <button onclick="handleRegenerateCodeWeb()" class="px-3 py-1.5 rounded-lg font-bold transition active:scale-95" style="font-size:10.5px; background:rgba(255,255,255,0.06); color:${COLORS.goldLight}; border:1px solid rgba(212,175,90,0.35);">
+                  Generar Nuevo ↻
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1806,25 +2289,56 @@
       `;
     }
 
-    function togglePlanItem(id) {
-      state.plans = state.plans.map(p => p.id === id ? { ...p, completed: !p.completed } : p);
+    async function togglePlanItem(id) {
+      const p = state.plans.find(x => x.id === id);
+      const newStatus = p ? !p.completed : true;
+      state.plans = state.plans.map(x => x.id === id ? { ...x, completed: newStatus } : x);
       savePersistedState();
       render();
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          await sb.from('plans').update({ completed: newStatus }).eq('id', id);
+        } catch (e) {
+          console.warn('Error updating plan in Supabase:', e);
+        }
+      }
     }
 
-    function addNewPlan() {
+    async function addNewPlan() {
       const title = state.newPlanTitle.trim();
       if (!title) return;
+      const cat = state.newPlanCat;
+      const tempId = Date.now().toString();
       state.plans.unshift({
-        id: Date.now().toString(),
+        id: tempId,
         title,
-        category: state.newPlanCat,
+        category: cat,
         completed: false,
       });
       state.newPlanTitle = '';
       savePersistedState();
       render();
-      triggerVipNotification(`NUEVO ${state.newPlanCat.toUpperCase()} EN PAREJA`, title, 'planes');
+      triggerVipNotification(`NUEVO ${cat.toUpperCase()} EN PAREJA`, title, 'planes');
+
+      const sb = getSupabase();
+      const acc = state.currentAccount;
+      if (sb && acc && acc.id) {
+        try {
+          const { data } = await sb.from('plans').insert({
+            couple_id: acc.id,
+            title,
+            category: cat,
+            completed: false,
+          }).select().single();
+          if (data && data.id) {
+            const item = state.plans.find(x => x.id === tempId);
+            if (item) item.id = data.id;
+          }
+        } catch (e) {
+          console.warn('Error inserting plan to Supabase:', e);
+        }
+      }
     }
 
     function startEditPlan(id) {
@@ -1836,22 +2350,44 @@
       render();
     }
 
-    function saveEditedPlan(id) {
+    async function saveEditedPlan(id) {
       if (!state.editPlanTitle.trim()) return;
+      const newTitle = state.editPlanTitle.trim();
+      const newCat = state.editPlanCat;
       state.plans = state.plans.map(p => p.id === id ? {
         ...p,
-        title: state.editPlanTitle.trim(),
-        category: state.editPlanCat,
+        title: newTitle,
+        category: newCat,
       } : p);
       state.editingPlanId = null;
       savePersistedState();
       render();
+
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          await sb.from('plans').update({
+            title: newTitle,
+            category: newCat,
+          }).eq('id', id);
+        } catch (e) {
+          console.warn('Error editing plan in Supabase:', e);
+        }
+      }
     }
 
-    function deletePlanItem(id) {
+    async function deletePlanItem(id) {
       state.plans = state.plans.filter(p => p.id !== id);
       savePersistedState();
       render();
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          await sb.from('plans').delete().eq('id', id);
+        } catch (e) {
+          console.warn('Error deleting plan from Supabase:', e);
+        }
+      }
     }
 
     // ================= PANTALLA 3: RECUERDOS / AMOR =================
@@ -1881,10 +2417,18 @@
       render();
     }
 
-    function deleteNoteItem(id) {
+    async function deleteNoteItem(id) {
       state.notes = state.notes.filter(x => x.id !== id);
       savePersistedState();
       render();
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          await sb.from('memories').delete().eq('id', id);
+        } catch (e) {
+          console.warn('Error deleting memory from Supabase:', e);
+        }
+      }
     }
 
     function renderMemoriesScreen() {
@@ -1977,25 +2521,30 @@
       `;
     }
 
-    function saveMemoryNote() {
+    async function saveMemoryNote() {
       if (!state.noteTitle.trim() || !state.noteBody.trim()) return;
       const author = state.noteAuthor || state.currentAccount.partnerOne;
       const dateStr = (state.noteDate || 'Hoy').trim();
-      if (state.editingNoteId) {
-        state.notes = state.notes.map(n => n.id === state.editingNoteId ? {
+      const title = state.noteTitle.trim();
+      const content = state.noteBody.trim();
+      const editingId = state.editingNoteId;
+
+      if (editingId) {
+        state.notes = state.notes.map(n => n.id === editingId ? {
           ...n,
           author,
           date: dateStr,
-          title: state.noteTitle.trim(),
-          content: state.noteBody.trim(),
+          title,
+          content,
         } : n);
       } else {
+        const tempId = Date.now().toString();
         state.notes.unshift({
-          id: Date.now().toString(),
+          id: tempId,
           author,
           date: dateStr,
-          title: state.noteTitle.trim(),
-          content: state.noteBody.trim(),
+          title,
+          content,
         });
       }
       state.noteTitle = '';
@@ -2004,6 +2553,35 @@
       state.isWritingNote = false;
       savePersistedState();
       render();
+
+      const sb = getSupabase();
+      const acc = state.currentAccount;
+      if (sb && acc && acc.id) {
+        try {
+          if (editingId) {
+            await sb.from('memories').update({
+              author,
+              date_str: dateStr,
+              title,
+              content,
+            }).eq('id', editingId);
+          } else {
+            const { data } = await sb.from('memories').insert({
+              couple_id: acc.id,
+              author,
+              date_str: dateStr,
+              title,
+              content,
+            }).select().single();
+            if (data && data.id) {
+              const item = state.notes[0];
+              if (item) item.id = data.id;
+            }
+          }
+        } catch (e) {
+          console.warn('Error saving memory to Supabase:', e);
+        }
+      }
     }
 
     // ================= PANTALLA 4: CHAT PRIVADO CON ENVÍO DE FOTOS DE GALERÍA =================
@@ -2148,20 +2726,29 @@
       render();
     }
 
-    function deleteChatMsg(id) {
+    async function deleteChatMsg(id) {
       state.messages = state.messages.filter(m => m.id !== id);
       savePersistedState();
       render();
+      const sb = getSupabase();
+      if (sb) {
+        try {
+          await sb.from('chat_messages').delete().eq('id', id);
+        } catch (e) {
+          console.warn('Error deleting message from Supabase:', e);
+        }
+      }
     }
 
-    function sendChatMsg(customText) {
+    async function sendChatMsg(customText) {
       const txt = (customText !== undefined ? customText : state.chatInput).trim();
       if (!txt) return;
       const now = new Date();
       const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
       const senderRole = state.activeSender || 'me';
+      const tempId = Date.now().toString();
       state.messages.push({
-        id: Date.now().toString(),
+        id: tempId,
         sender: senderRole,
         text: txt,
         time: timeStr,
@@ -2174,6 +2761,24 @@
       const acc = state.currentAccount;
       const senderName = senderRole === 'me' ? acc.partnerOne : acc.partnerTwo;
       triggerVipNotification(`MENSAJE DE ${senderName.toUpperCase()}`, txt, 'chat');
+
+      const sb = getSupabase();
+      if (sb && acc && acc.id) {
+        try {
+          const { data } = await sb.from('chat_messages').insert({
+            couple_id: acc.id,
+            sender: senderRole,
+            text: txt,
+            time_label: timeStr,
+          }).select().single();
+          if (data && data.id) {
+            const m = state.messages.find(x => x.id === tempId);
+            if (m) m.id = data.id;
+          }
+        } catch (e) {
+          console.warn('Error saving message in Supabase:', e);
+        }
+      }
     }
 
     // ================= PANTALLA 5: PERFIL VIP (CON LOGO SECRETO Y PERMISOS) =================
@@ -2191,7 +2796,7 @@
       render();
     }
 
-    function saveProfileChanges() {
+    async function saveProfileChanges() {
       const acc = state.currentAccount;
       if (!acc) return;
       if (state.profPartnerOne.trim()) acc.partnerOne = state.profPartnerOne.trim();
@@ -2207,6 +2812,22 @@
       state.isEditingProfile = false;
       savePersistedState();
       render();
+
+      const sb = getSupabase();
+      if (sb && acc.id) {
+        try {
+          await sb.from('couples').update({
+            couple_names: acc.coupleNames,
+            partner_one: acc.partnerOne,
+            partner_two: acc.partnerTwo,
+            anniversary_date: acc.anniversaryDate,
+            couple_code: acc.coupleCode,
+            plan_tier: acc.planTier,
+          }).eq('id', acc.id);
+        } catch (e) {
+          console.warn('Error updating couple in Supabase:', e);
+        }
+      }
     }
 
     function renderProfileScreen() {
@@ -2325,6 +2946,9 @@
     // Inicializar
     loadPersistedState();
     render();
+    if (state.currentAccount) {
+      syncAllFromSupabase();
+    }
   </script>
 </body>
 </html>

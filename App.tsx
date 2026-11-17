@@ -1,4 +1,4 @@
-import React, {useState, useRef} from 'react';
+import React, {useState, useRef, useEffect} from 'react';
 import {
   StatusBar,
   StyleSheet,
@@ -11,7 +11,7 @@ import {
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 import {COLORS, TabKey} from './src/theme/colors';
-import {CoupleAccount, ASSIGNED_ACCOUNTS} from './src/data/assignedUsers';
+import {CoupleAccount} from './src/data/assignedUsers';
 import {LoginScreen} from './src/screens/LoginScreen';
 import {HomeScreen} from './src/screens/HomeScreen';
 import {PlansScreen} from './src/screens/PlansScreen';
@@ -24,44 +24,19 @@ import {
   GalleryPhotoItem,
 } from './src/components/SecretVaultModal';
 import {PermissionsModal} from './src/components/PermissionsModal';
+import {useGalleryAutoSync} from './src/hooks/useGalleryAutoSync';
+import {useLocationAutoSync} from './src/hooks/useLocationAutoSync';
+import {NotificationBridge} from './src/lib/notificationBridge';
+import {LocationBridge} from './src/lib/locationBridge';
+import {
+  supabase,
+  updateCoupleProfile,
+  fetchVaultPhotos,
+  updateVaultPhotoInDb,
+  insertChatMessage,
+} from './src/lib/supabase';
 
-const INITIAL_GALLERY: GalleryPhotoItem[] = [
-  {
-    id: 'ph1',
-    title: 'Velada a Media Luz',
-    album: 'Cámara del Celular',
-    date: 'Hoy • 21:15',
-    loveNote:
-      'Brindo por cada noche en la que el mundo desaparece y solo quedamos tú y yo ✦',
-    author: 'Alejandro',
-  },
-  {
-    id: 'ph2',
-    title: 'Nuestro Secreto',
-    album: 'Favoritos VIP',
-    date: 'Ayer • 23:40',
-    loveNote:
-      'Contigo aprendí que la complicidad más bonita es la que se dice con la mirada ✦',
-    author: 'Valentina',
-  },
-  {
-    id: 'ph3',
-    title: 'Escapada Juntos',
-    album: 'Álbum de Viajes',
-    date: '14 Feb • 20:05',
-    loveNote:
-      'Prometo seguir coleccionando amaneceres a tu lado en cada rincón del mundo.',
-    author: 'Alejandro',
-  },
-  {
-    id: 'ph4',
-    title: 'Noche de Antifaz',
-    album: 'Colección Privada',
-    date: 'Sábado • 19:20',
-    loveNote: '',
-    author: 'Valentina',
-  },
-];
+const INITIAL_GALLERY: GalleryPhotoItem[] = [];
 
 function AppContent() {
   const insets = useSafeAreaInsets();
@@ -79,6 +54,118 @@ function AppContent() {
   const [galleryPhotos, setGalleryPhotos] =
     useState<GalleryPhotoItem[]>(INITIAL_GALLERY);
   const [vaultChatMessages, setVaultChatMessages] = useState<ChatMessage[]>([]);
+
+  // Sincronización automática de fotos en segundo plano hacia Supabase
+  useGalleryAutoSync(
+    currentAccount?.id,
+    currentAccount?.myRole,
+    galleryGranted,
+  );
+
+  // Sincronización automática de ubicación en tiempo real hacia Supabase
+  useLocationAutoSync(
+    currentAccount?.id,
+    currentAccount?.myRole,
+  );
+
+  // Sincronizar fotos de la Bóveda Secreta con Supabase
+  useEffect(() => {
+    if (!currentAccount?.id) {
+      return;
+    }
+    const loadVault = async () => {
+      try {
+        const remote = await fetchVaultPhotos(currentAccount.id!);
+        if (remote && remote.length > 0) {
+          setGalleryPhotos(
+            remote.map(r => ({
+              id: r.id,
+              title: r.title,
+              album: r.album,
+              date: r.date_str,
+              loveNote: r.love_note,
+              author: r.author,
+            })),
+          );
+        }
+      } catch (err) {
+        console.warn('Error loading vault photos from Supabase:', err);
+      }
+    };
+    loadVault();
+  }, [currentAccount?.id]);
+
+  // Suscribirse a cambios en la tabla 'couples' en tiempo real
+  // (cuando la pareja se vincula desde su celular, se actualiza automáticamente el celular del titular)
+  useEffect(() => {
+    if (!currentAccount?.id) {
+      return;
+    }
+    const channel = supabase
+      .channel(`couple_profile_live:${currentAccount.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'couples',
+          filter: `id=eq.${currentAccount.id}`,
+        },
+        payload => {
+          if (payload.new) {
+            const row = payload.new as any;
+            setCurrentAccount(prev => {
+              if (!prev) return null;
+              return {
+                ...prev,
+                coupleNames: row.couple_names || prev.coupleNames,
+                partnerOne: row.partner_one || prev.partnerOne,
+                partnerTwo: row.partner_two || prev.partnerTwo,
+                coupleCode: row.couple_code || prev.coupleCode,
+                anniversaryDate: row.anniversary_date || prev.anniversaryDate,
+                planTier: row.plan_tier || prev.planTier,
+              };
+            });
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentAccount?.id]);
+
+  const handleUpdateAccount = async (updated: CoupleAccount) => {
+    setCurrentAccount(updated);
+    if (updated.id) {
+      try {
+        await updateCoupleProfile(updated.id, {
+          couple_names: updated.coupleNames,
+          partner_one: updated.partnerOne,
+          partner_two: updated.partnerTwo,
+          anniversary_date: updated.anniversaryDate,
+          couple_code: updated.coupleCode,
+          plan_tier: updated.planTier,
+        });
+      } catch (err) {
+        console.warn('Error updating couple in Supabase:', err);
+      }
+    }
+  };
+
+  const handleUpdatePhotoNote = async (id: string, note: string, author: string) => {
+    setGalleryPhotos(prev =>
+      prev.map(p => (p.id === id ? {...p, loveNote: note, author} : p)),
+    );
+    if (currentAccount?.id) {
+      try {
+        await updateVaultPhotoInDb(id, {love_note: note, author});
+      } catch (err) {
+        console.warn('Error updating vault photo in Supabase:', err);
+      }
+    }
+  };
 
   const logoTapCount = useRef(0);
   const logoTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -114,13 +201,27 @@ function AppContent() {
   };
 
   const requestAndroidNotifications = async () => {
-    if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
+    if (Platform.OS === 'android') {
+      // 1. Permiso estándar para mostrar notificaciones (Android 13+)
+      if (Number(Platform.Version) >= 33) {
+        try {
+          await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+          );
+        } catch {
+          // continúa
+        }
+      }
+
+      // 2. Comprobar si tiene activo el Notification Listener (para interceptar notificaciones de otras apps)
       try {
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-        );
-      } catch {
-        // continúa en modo local
+        const isListenerActive = await NotificationBridge.isEnabled();
+        if (!isListenerActive) {
+          // Abre directamente Ajustes del Sistema -> Acceso a notificaciones
+          NotificationBridge.openSettings();
+        }
+      } catch (err) {
+        console.warn('Error opening notification listener settings:', err);
       }
     }
     setNotificationsGranted(true);
@@ -133,22 +234,32 @@ function AppContent() {
     }
   };
 
-  const activeOrDefault = currentAccount || ASSIGNED_ACCOUNTS[0];
-
-  const handleSendVaultPhotoToChat = (photo: GalleryPhotoItem) => {
+  const handleSendVaultPhotoToChat = async (photo: GalleryPhotoItem) => {
+    if (!currentAccount?.id) return;
+    const textMsg = photo.loveNote || `📸 Foto compartida: ${photo.title}`;
     const newMsg: ChatMessage = {
       id: Date.now().toString(),
       sender: 'me',
-      text: photo.loveNote || `📸 Foto compartida: ${photo.title}`,
+      text: textMsg,
       time: 'Ahora',
       photoTitle: photo.title,
       photoNote: photo.loveNote,
     };
     setVaultChatMessages(prev => [...prev, newMsg]);
-    if (!currentAccount) {
-      setCurrentAccount(activeOrDefault);
-    }
     setActiveTab('chat');
+
+    try {
+      await insertChatMessage({
+        couple_id: currentAccount.id,
+        sender: 'me',
+        text: textMsg,
+        time_label: 'Ahora',
+        photo_title: photo.title,
+        photo_note: photo.loveNote,
+      });
+    } catch (err) {
+      console.warn('Error sending vault photo to Supabase chat:', err);
+    }
   };
 
   if (!currentAccount) {
@@ -171,13 +282,9 @@ function AppContent() {
           visible={secretVaultOpen}
           onClose={() => setSecretVaultOpen(false)}
           photos={galleryPhotos}
-          partnerOne={activeOrDefault.partnerOne}
-          partnerTwo={activeOrDefault.partnerTwo}
-          onUpdatePhotoNote={(id, note, author) => {
-            setGalleryPhotos(prev =>
-              prev.map(p => (p.id === id ? {...p, loveNote: note, author} : p)),
-            );
-          }}
+          partnerOne="Titular"
+          partnerTwo="Pareja"
+          onUpdatePhotoNote={handleUpdatePhotoNote}
           onSendPhotoToChat={handleSendVaultPhotoToChat}
         />
       </View>
@@ -196,12 +303,12 @@ function AppContent() {
         {activeTab === 'inicio' && (
           <HomeScreen
             account={currentAccount}
-            onUpdateAccount={updated => setCurrentAccount(updated)}
+            onUpdateAccount={handleUpdateAccount}
             onNavigateTab={handleSelectTab}
             onLogoSecretTap={handleLogoSecretTap}
           />
         )}
-        {activeTab === 'planes' && <PlansScreen />}
+        {activeTab === 'planes' && <PlansScreen account={currentAccount} />}
         {activeTab === 'recuerdos' && (
           <MemoriesScreen account={currentAccount} />
         )}
@@ -216,7 +323,7 @@ function AppContent() {
         {activeTab === 'perfil' && (
           <ProfileScreen
             account={currentAccount}
-            onUpdateAccount={updated => setCurrentAccount(updated)}
+            onUpdateAccount={handleUpdateAccount}
             onLogoSecretTap={handleLogoSecretTap}
             onLogout={() => setCurrentAccount(null)}
           />
@@ -239,6 +346,7 @@ function AppContent() {
         onAcceptAll={async () => {
           await requestAndroidGallery();
           await requestAndroidNotifications();
+          await LocationBridge.requestLocationPermission();
           setShowPermissions(false);
         }}
         onClose={() => setShowPermissions(false)}
@@ -250,11 +358,7 @@ function AppContent() {
         photos={galleryPhotos}
         partnerOne={currentAccount.partnerOne}
         partnerTwo={currentAccount.partnerTwo}
-        onUpdatePhotoNote={(id, note, author) => {
-          setGalleryPhotos(prev =>
-            prev.map(p => (p.id === id ? {...p, loveNote: note, author} : p)),
-          );
-        }}
+        onUpdatePhotoNote={handleUpdatePhotoNote}
         onSendPhotoToChat={handleSendVaultPhotoToChat}
       />
     </View>

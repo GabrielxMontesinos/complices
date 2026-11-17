@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,23 @@ import {
   TextInput,
 } from 'react-native';
 import {COLORS} from '../theme/colors';
+import {CoupleAccount} from '../data/assignedUsers';
+import {
+  fetchPlans,
+  insertPlan,
+  updatePlanInDb,
+  deletePlanFromDb,
+} from '../lib/supabase';
 
 interface PlanItem {
   id: string;
   title: string;
   category: 'Cita' | 'Reto' | 'Deseo';
   completed: boolean;
+}
+
+interface PlansScreenProps {
+  account?: CoupleAccount;
 }
 
 const INITIAL_PLANS: PlanItem[] = [
@@ -49,8 +60,9 @@ const INITIAL_PLANS: PlanItem[] = [
   },
 ];
 
-export const PlansScreen: React.FC = () => {
-  const [plans, setPlans] = useState<PlanItem[]>(INITIAL_PLANS);
+export const PlansScreen: React.FC<PlansScreenProps> = ({account}) => {
+  const [plans, setPlans] = useState<PlanItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'Todos' | 'Cita' | 'Reto' | 'Deseo'>(
     'Todos',
   );
@@ -64,26 +76,85 @@ export const PlansScreen: React.FC = () => {
     'Reto',
   );
 
-  const togglePlan = (id: string) => {
+  useEffect(() => {
+    if (!account?.id) {
+      return;
+    }
+    const loadRemotePlans = async () => {
+      setLoading(true);
+      try {
+        const remote = await fetchPlans(account.id!);
+        if (remote) {
+          setPlans(
+            remote.map(r => ({
+              id: r.id,
+              title: r.title,
+              category: r.category,
+              completed: r.completed,
+            })),
+          );
+        }
+      } catch (err) {
+        console.warn('Error loading plans from Supabase:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadRemotePlans();
+  }, [account?.id]);
+
+  const togglePlan = async (id: string) => {
+    const target = plans.find(p => p.id === id);
+    const newCompleted = target ? !target.completed : true;
+
     setPlans(prev =>
       prev.map(item =>
-        item.id === id ? {...item, completed: !item.completed} : item,
+        item.id === id ? {...item, completed: newCompleted} : item,
       ),
     );
+
+    if (account?.id) {
+      try {
+        await updatePlanInDb(id, {completed: newCompleted});
+      } catch (err) {
+        console.warn('Error toggling plan in Supabase:', err);
+      }
+    }
   };
 
-  const addPlan = () => {
+  const addPlan = async () => {
     if (!newTitle.trim()) {
       return;
     }
+    const tempId = Date.now().toString();
     const created: PlanItem = {
-      id: Date.now().toString(),
+      id: tempId,
       title: newTitle.trim(),
       category: newCategory,
       completed: false,
     };
     setPlans([created, ...plans]);
+    const addedTitle = newTitle.trim();
+    const addedCategory = newCategory;
     setNewTitle('');
+
+    if (account?.id) {
+      try {
+        const saved = await insertPlan({
+          couple_id: account.id,
+          title: addedTitle,
+          category: addedCategory,
+          completed: false,
+        });
+        if (saved && saved.id) {
+          setPlans(prev =>
+            prev.map(p => (p.id === tempId ? {...p, id: saved.id} : p)),
+          );
+        }
+      } catch (err) {
+        console.warn('Error saving plan to Supabase:', err);
+      }
+    }
   };
 
   const startEdit = (item: PlanItem) => {
@@ -92,22 +163,43 @@ export const PlansScreen: React.FC = () => {
     setEditCategory(item.category);
   };
 
-  const saveEdit = (id: string) => {
+  const saveEdit = async (id: string) => {
     if (!editTitle.trim()) {
       return;
     }
+    const updatedTitle = editTitle.trim();
+    const updatedCategory = editCategory;
+
     setPlans(prev =>
       prev.map(p =>
         p.id === id
-          ? {...p, title: editTitle.trim(), category: editCategory}
+          ? {...p, title: updatedTitle, category: updatedCategory}
           : p,
       ),
     );
     setEditingId(null);
+
+    if (account?.id) {
+      try {
+        await updatePlanInDb(id, {
+          title: updatedTitle,
+          category: updatedCategory,
+        });
+      } catch (err) {
+        console.warn('Error updating plan in Supabase:', err);
+      }
+    }
   };
 
-  const deletePlan = (id: string) => {
+  const deletePlan = async (id: string) => {
     setPlans(prev => prev.filter(p => p.id !== id));
+    if (account?.id) {
+      try {
+        await deletePlanFromDb(id);
+      } catch (err) {
+        console.warn('Error deleting plan from Supabase:', err);
+      }
+    }
   };
 
   const filteredPlans =

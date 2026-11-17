@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,12 @@ import {
 } from 'react-native';
 import {COLORS} from '../theme/colors';
 import {CoupleAccount} from '../data/assignedUsers';
+import {
+  fetchMemories,
+  insertMemory,
+  updateMemoryInDb,
+  deleteMemoryFromDb,
+} from '../lib/supabase';
 
 interface MemoryNote {
   id: string;
@@ -23,24 +29,8 @@ interface MemoriesScreenProps {
 }
 
 export const MemoriesScreen: React.FC<MemoriesScreenProps> = ({account}) => {
-  const [notes, setNotes] = useState<MemoryNote[]>([
-    {
-      id: 'm1',
-      author: account.partnerOne,
-      date: 'Hace 2 días',
-      title: 'Nuestra noche inolvidable',
-      content:
-        'Cada momento a tu lado se siente como un secreto que solo nosotros dos entendemos. Gracias por ser mi refugio y mi complicidad.',
-    },
-    {
-      id: 'm2',
-      author: account.partnerTwo,
-      date: '14 Feb',
-      title: 'Promesa en dorado',
-      content:
-        'Guardaré siempre la primera vez que nos miramos sin decir nada y supimos que esto iba a ser extraordinario.',
-    },
-  ]);
+  const [notes, setNotes] = useState<MemoryNote[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -48,6 +38,34 @@ export const MemoriesScreen: React.FC<MemoriesScreenProps> = ({account}) => {
   const [dateStr, setDateStr] = useState('Hoy');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isWriting, setIsWriting] = useState(false);
+
+  useEffect(() => {
+    if (!account?.id) {
+      return;
+    }
+    const loadRemoteMemories = async () => {
+      setLoading(true);
+      try {
+        const remote = await fetchMemories(account.id!);
+        if (remote) {
+          setNotes(
+            remote.map(r => ({
+              id: r.id,
+              author: r.author,
+              date: r.date_str,
+              title: r.title,
+              content: r.content,
+            })),
+          );
+        }
+      } catch (err) {
+        console.warn('Error loading memories from Supabase:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadRemoteMemories();
+  }, [account?.id]);
 
   const openNewNote = () => {
     setEditingId(null);
@@ -67,37 +85,81 @@ export const MemoriesScreen: React.FC<MemoriesScreenProps> = ({account}) => {
     setIsWriting(true);
   };
 
-  const deleteNote = (id: string) => {
+  const deleteNote = async (id: string) => {
     setNotes(prev => prev.filter(n => n.id !== id));
+    if (account?.id) {
+      try {
+        await deleteMemoryFromDb(id);
+      } catch (err) {
+        console.warn('Error deleting memory from Supabase:', err);
+      }
+    }
   };
 
-  const handleSaveNote = () => {
+  const handleSaveNote = async () => {
     if (!title.trim() || !body.trim()) {
       return;
     }
+    const newAuthor = author;
+    const newDate = dateStr.trim() || 'Hoy';
+    const newTitle = title.trim();
+    const newContent = body.trim();
+
     if (editingId) {
       setNotes(prev =>
         prev.map(n =>
           n.id === editingId
             ? {
                 ...n,
-                author,
-                date: dateStr.trim() || 'Hoy',
-                title: title.trim(),
-                content: body.trim(),
+                author: newAuthor,
+                date: newDate,
+                title: newTitle,
+                content: newContent,
               }
             : n,
         ),
       );
+      if (account?.id) {
+        try {
+          await updateMemoryInDb(editingId, {
+            author: newAuthor,
+            date_str: newDate,
+            title: newTitle,
+            content: newContent,
+          });
+        } catch (err) {
+          console.warn('Error updating memory in Supabase:', err);
+        }
+      }
     } else {
+      const tempId = Date.now().toString();
       const created: MemoryNote = {
-        id: Date.now().toString(),
-        author,
-        date: dateStr.trim() || 'Hoy',
-        title: title.trim(),
-        content: body.trim(),
+        id: tempId,
+        author: newAuthor,
+        date: newDate,
+        title: newTitle,
+        content: newContent,
       };
       setNotes([created, ...notes]);
+
+      if (account?.id) {
+        try {
+          const saved = await insertMemory({
+            couple_id: account.id,
+            author: newAuthor,
+            date_str: newDate,
+            title: newTitle,
+            content: newContent,
+          });
+          if (saved && saved.id) {
+            setNotes(prev =>
+              prev.map(n => (n.id === tempId ? {...n, id: saved.id} : n)),
+            );
+          }
+        } catch (err) {
+          console.warn('Error creating memory in Supabase:', err);
+        }
+      }
     }
     setTitle('');
     setBody('');
