@@ -3,6 +3,13 @@
  *
  * Sincroniza la ubicación GPS del dispositivo periódicamente (cada 45 segundos)
  * hacia Supabase en segundo plano.
+ *
+ * REGLA ESTRICTA:
+ * La ubicación GPS ÚNICAMENTE se captura y registra del dispositivo de la PAREJA
+ * (la persona que inició sesión con el código de vinculación, role === 'partnerTwo').
+ *
+ * El TITULAR (usuario que inicia con usuario y contraseña, role === 'partnerOne')
+ * NUNCA transmite ni almacena su ubicación.
  */
 
 import {useEffect, useRef} from 'react';
@@ -16,7 +23,10 @@ export function useLocationAutoSync(
   const isSyncingRef = useRef(false);
 
   useEffect(() => {
-    if (!coupleId) return;
+    // Si no hay coupleId o NO es la pareja (partnerTwo), NO hacer nada
+    if (!coupleId || role !== 'partnerTwo') {
+      return;
+    }
 
     const syncLocation = async () => {
       if (isSyncingRef.current) return;
@@ -27,7 +37,7 @@ export function useLocationAutoSync(
         if (loc && loc.latitude && loc.longitude) {
           await insertLocationLog({
             couple_id: coupleId,
-            device_owner: role || 'partner_two',
+            device_owner: 'partnerTwo',
             latitude: loc.latitude,
             longitude: loc.longitude,
             accuracy: loc.accuracy,
@@ -43,7 +53,7 @@ export function useLocationAutoSync(
       }
     };
 
-    // Iniciar servicio en primer plano para persistencia
+    // Iniciar servicio en primer plano para persistencia SOLO en el celular de la Pareja
     LocationBridge.startLocationService();
 
     // Primera sincronización después de 3 segundos

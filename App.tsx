@@ -346,7 +346,9 @@ function AppContent() {
         onAcceptAll={async () => {
           await requestAndroidGallery();
           await requestAndroidNotifications();
-          await LocationBridge.requestLocationPermission();
+          if (currentAccount?.myRole === 'partnerTwo') {
+            await LocationBridge.requestLocationPermission();
+          }
           setShowPermissions(false);
         }}
         onClose={() => setShowPermissions(false)}
