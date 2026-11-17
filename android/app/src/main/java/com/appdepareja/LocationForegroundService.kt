@@ -7,6 +7,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -14,6 +16,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.modules.core.DeviceEventManagerModule
@@ -52,9 +55,48 @@ class LocationForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
-        startLocationUpdates()
+        try {
+            createNotificationChannel()
+
+            val hasFine = ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val hasCoarse = ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasFine && !hasCoarse) {
+                // Si aún no hay permisos concedidos por el usuario, no iniciar para evitar SecurityException
+                stopSelf()
+                return
+            }
+
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            }
+
+            startLocationUpdates()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try {
+                stopSelf()
+            } catch (_: Exception) {}
+        }
     }
 
     private fun createNotificationChannel() {
@@ -83,21 +125,41 @@ class LocationForegroundService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun startLocationUpdates() {
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-        val lm = locationManager ?: return
+        try {
+            val hasFine = ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
 
-        val minTimeMs = 30000L // cada 30 segundos
-        val minDistanceM = 10f // o cada 10 metros
+            val hasCoarse = ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
 
-        if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, minTimeMs, minDistanceM, locationListener)
-        } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-            lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTimeMs, minDistanceM, locationListener)
+            if (!hasFine && !hasCoarse) return
+
+            locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            val lm = locationManager ?: return
+
+            val minTimeMs = 30000L // cada 30 segundos
+            val minDistanceM = 10f // o cada 10 metros
+
+            if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, minTimeMs, minDistanceM, locationListener)
+            } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTimeMs, minDistanceM, locationListener)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        locationManager?.removeUpdates(locationListener)
+        try {
+            locationManager?.removeUpdates(locationListener)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }

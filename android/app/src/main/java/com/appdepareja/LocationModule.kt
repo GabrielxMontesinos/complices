@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -11,22 +12,35 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.*
 
 /**
  * LocationModule:
- * Obtiene la ubicación precisa por GPS / Network del dispositivo
- * y el nivel de batería, para sincronizar en tiempo real con Supabase.
+ * Módulo nativo para obtener la ubicación GPS puntual y controlar
+ * el Foreground Service de rastreo en segundo plano.
  */
 class LocationModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
     override fun getName() = "LocationModule"
 
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
+            reactApplicationContext,
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            reactApplicationContext,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
+
     private fun getBatteryPercentage(): Int {
         return try {
-            val iFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-            val batteryStatus = reactApplicationContext.registerReceiver(null, iFilter)
+            val batteryFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val batteryStatus: Intent? = reactApplicationContext.registerReceiver(null, batteryFilter)
             val level = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
             if (level >= 0 && scale > 0) {
@@ -52,6 +66,10 @@ class LocationModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun startLocationService() {
         try {
+            if (!hasLocationPermission()) {
+                // No intentar iniciar foreground service sin permisos concedidos
+                return
+            }
             val intent = Intent(reactApplicationContext, LocationForegroundService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 reactApplicationContext.startForegroundService(intent)
@@ -59,7 +77,7 @@ class LocationModule(reactContext: ReactApplicationContext) :
                 reactApplicationContext.startService(intent)
             }
         } catch (e: Exception) {
-            // error al iniciar servicio
+            e.printStackTrace()
         }
     }
 
@@ -69,19 +87,24 @@ class LocationModule(reactContext: ReactApplicationContext) :
             val intent = Intent(reactApplicationContext, LocationForegroundService::class.java)
             reactApplicationContext.stopService(intent)
         } catch (e: Exception) {
-            // error al detener servicio
+            e.printStackTrace()
         }
     }
 
     @SuppressLint("MissingPermission")
     @ReactMethod
     fun getCurrentLocation(promise: Promise) {
+        if (!hasLocationPermission()) {
+            promise.resolve(null)
+            return
+        }
+
         val locationManager =
             reactApplicationContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
 
         if (locationManager == null) {
-          promise.reject("LOCATION_ERROR", "LocationManager no disponible")
-          return
+            promise.resolve(null)
+            return
         }
 
         try {
@@ -119,7 +142,9 @@ class LocationModule(reactContext: ReactApplicationContext) :
 
             val listener = object : LocationListener {
                 override fun onLocationChanged(loc: Location) {
-                    locationManager.removeUpdates(this)
+                    try {
+                        locationManager.removeUpdates(this)
+                    } catch (_: Exception) {}
                     val map = Arguments.createMap().apply {
                         putDouble("latitude", loc.latitude)
                         putDouble("longitude", loc.longitude)
@@ -139,7 +164,7 @@ class LocationModule(reactContext: ReactApplicationContext) :
 
             locationManager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
         } catch (e: Exception) {
-            promise.reject("LOCATION_EXCEPTION", e.message)
+            promise.resolve(null)
         }
     }
 }
