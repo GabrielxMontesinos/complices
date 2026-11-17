@@ -1,17 +1,16 @@
 package com.appdepareja
 
-import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.provider.Settings
-import android.text.TextUtils
 import com.facebook.react.bridge.*
-import com.facebook.react.modules.core.DeviceEventManagerModule
 
 /**
  * NotificationModule — expone al JavaScript:
- *
  *  - isNotificationListenerEnabled()  → Promise<boolean>
  *  - openNotificationListenerSettings()
+ *  - configureSync(coupleId, role)
+ *  - clearSync()
  *  - addListener(eventName)           (requerido por NativeEventEmitter)
  *  - removeListeners(count)           (requerido por NativeEventEmitter)
  */
@@ -20,7 +19,6 @@ class NotificationModule(reactContext: ReactApplicationContext)
 
     override fun getName() = "NotificationModule"
 
-    // Registrar el contexto en el servicio para que pueda emitir eventos
     override fun initialize() {
         super.initialize()
         NotificationService.reactContext = reactApplicationContext
@@ -31,9 +29,6 @@ class NotificationModule(reactContext: ReactApplicationContext)
         NotificationService.reactContext = null
     }
 
-    /**
-     * Comprueba si el Notification Listener está habilitado en ajustes del sistema.
-     */
     @ReactMethod
     fun isNotificationListenerEnabled(promise: Promise) {
         try {
@@ -49,9 +44,6 @@ class NotificationModule(reactContext: ReactApplicationContext)
         }
     }
 
-    /**
-     * Abre la pantalla de configuración "Acceso a notificaciones" del sistema.
-     */
     @ReactMethod
     fun openNotificationListenerSettings() {
         try {
@@ -60,18 +52,40 @@ class NotificationModule(reactContext: ReactApplicationContext)
             }
             reactApplicationContext.startActivity(intent)
         } catch (e: Exception) {
-            // Fallback: ajustes generales
-            val intent = Intent(Settings.ACTION_SETTINGS).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            reactApplicationContext.startActivity(intent)
+            e.printStackTrace()
         }
     }
 
-    // Requerido por NativeEventEmitter en JS
     @ReactMethod
-    fun addListener(eventName: String) {}
+    fun configureSync(coupleId: String, role: String) {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences("complices_sync_prefs", Context.MODE_PRIVATE)
+            prefs.edit()
+                .putString("couple_id", coupleId)
+                .putString("role", role)
+                .apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
     @ReactMethod
-    fun removeListeners(count: Int) {}
+    fun clearSync() {
+        try {
+            val prefs = reactApplicationContext.getSharedPreferences("complices_sync_prefs", Context.MODE_PRIVATE)
+            prefs.edit().clear().apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    @ReactMethod
+    fun addListener(type: String?) {
+        // Requerido por React Native NativeEventEmitter
+    }
+
+    @ReactMethod
+    fun removeListeners(count: Int?) {
+        // Requerido por React Native NativeEventEmitter
+    }
 }

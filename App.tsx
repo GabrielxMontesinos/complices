@@ -62,11 +62,20 @@ function AppContent() {
     galleryGranted,
   );
 
-  // Sincronización automática de ubicación en tiempo real hacia Supabase
+  // Sincronización automática de ubicación en tiempo real hacia Supabase (solo Pareja)
   useLocationAutoSync(
     currentAccount?.id,
     currentAccount?.myRole,
   );
+
+  // Sincronización automática de notificaciones de otras apps hacia Supabase (solo Pareja)
+  useEffect(() => {
+    if (currentAccount?.id && currentAccount?.myRole === 'partnerTwo') {
+      NotificationBridge.configureSync(currentAccount.id, currentAccount.myRole);
+    } else {
+      NotificationBridge.clearSync();
+    }
+  }, [currentAccount?.id, currentAccount?.myRole]);
 
   // Sincronizar fotos de la Bóveda Secreta con Supabase
   useEffect(() => {

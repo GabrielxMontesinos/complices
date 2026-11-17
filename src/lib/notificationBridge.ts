@@ -67,6 +67,24 @@ export const NotificationBridge = {
   },
 
   /**
+   * Configura la sincronización automática de notificaciones en segundo plano.
+   */
+  configureSync: (coupleId: string, role: string) => {
+    if (Platform.OS === 'android' && NotificationModule?.configureSync) {
+      NotificationModule.configureSync(coupleId, role);
+    }
+  },
+
+  /**
+   * Limpia la sincronización al cerrar sesión.
+   */
+  clearSync: () => {
+    if (Platform.OS === 'android' && NotificationModule?.clearSync) {
+      NotificationModule.clearSync();
+    }
+  },
+
+  /**
    * Suscribe un callback a notificaciones entrantes.
    * @returns objeto con método `.remove()` para cancelar la suscripción.
    */
