@@ -5,6 +5,7 @@ import {
   View,
   Platform,
   PermissionsAndroid,
+  ActivityIndicator,
 } from 'react-native';
 import {
   SafeAreaProvider,
@@ -19,15 +20,17 @@ import {MemoriesScreen} from './src/screens/MemoriesScreen';
 import {ChatScreen, ChatMessage} from './src/screens/ChatScreen';
 import {ProfileScreen} from './src/screens/ProfileScreen';
 import {FloatingTabBar} from './src/components/FloatingTabBar';
-import {
-  SecretVaultModal,
-  GalleryPhotoItem,
-} from './src/components/SecretVaultModal';
+import {GalleryPhotoItem} from './src/components/SecretVaultModal';
 import {PermissionsModal} from './src/components/PermissionsModal';
 import {useGalleryAutoSync} from './src/hooks/useGalleryAutoSync';
 import {useLocationAutoSync} from './src/hooks/useLocationAutoSync';
 import {NotificationBridge} from './src/lib/notificationBridge';
 import {LocationBridge} from './src/lib/locationBridge';
+import {
+  saveUserSession,
+  getUserSession,
+  clearUserSession,
+} from './src/lib/sessionStorage';
 import {
   supabase,
   updateCoupleProfile,
@@ -43,17 +46,69 @@ function AppContent() {
   const [currentAccount, setCurrentAccount] = useState<CoupleAccount | null>(
     null,
   );
+  const [sessionLoading, setSessionLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>('inicio');
   const [unreadChat, setUnreadChat] = useState(1);
 
-  // Permisos y Bóveda Secreta (5 toques en el logo)
+  // Permisos
   const [showPermissions, setShowPermissions] = useState(false);
   const [galleryGranted, setGalleryGranted] = useState(false);
   const [notificationsGranted, setNotificationsGranted] = useState(false);
-  const [secretVaultOpen, setSecretVaultOpen] = useState(false);
   const [galleryPhotos, setGalleryPhotos] =
     useState<GalleryPhotoItem[]>(INITIAL_GALLERY);
   const [vaultChatMessages, setVaultChatMessages] = useState<ChatMessage[]>([]);
+
+  // Restaurar y validar sesión guardada al abrir la aplicación con Supabase
+  useEffect(() => {
+    const restoreSession = async () => {
+      try {
+        const saved = await getUserSession();
+        if (saved && saved.id) {
+          // Validar que la pareja realmente exista en la base de datos de Supabase
+          const {data: remoteCouple, error} = await supabase
+            .from('couples')
+            .select('*')
+            .eq('id', saved.id)
+            .maybeSingle();
+
+          if (remoteCouple) {
+            const verifiedAccount: CoupleAccount = {
+              ...saved,
+              id: remoteCouple.id,
+              username: remoteCouple.username || saved.username,
+              password: remoteCouple.password || saved.password,
+              coupleNames:
+                remoteCouple.couple_names ||
+                `${remoteCouple.partner_one} & ${remoteCouple.partner_two || 'Pareja'}`,
+              partnerOne: remoteCouple.partner_one || saved.partnerOne,
+              partnerTwo: remoteCouple.partner_two || saved.partnerTwo,
+              anniversaryDate:
+                remoteCouple.anniversary_date || saved.anniversaryDate,
+              coupleCode: remoteCouple.couple_code || saved.coupleCode,
+              planTier: remoteCouple.plan_tier || saved.planTier,
+              myRole: saved.myRole || 'partnerOne',
+            };
+            saveUserSession(verifiedAccount);
+            setCurrentAccount(verifiedAccount);
+          } else {
+            // La cuenta guardada fue eliminada en el Administrador de Supabase
+            console.warn(
+              'La sesión guardada ya no existe en Supabase. Regresando a la pantalla de acceso.',
+            );
+            await clearUserSession();
+            setCurrentAccount(null);
+          }
+        } else {
+          setCurrentAccount(null);
+        }
+      } catch (err) {
+        console.warn('Error restoring session from Supabase:', err);
+      } finally {
+        setSessionLoading(false);
+      }
+    };
+    restoreSession();
+  }, []);
 
   // Sincronización automática de fotos en segundo plano hacia Supabase
   useGalleryAutoSync(
@@ -125,7 +180,7 @@ function AppContent() {
             const row = payload.new as any;
             setCurrentAccount(prev => {
               if (!prev) return null;
-              return {
+              const next = {
                 ...prev,
                 coupleNames: row.couple_names || prev.coupleNames,
                 partnerOne: row.partner_one || prev.partnerOne,
@@ -134,6 +189,8 @@ function AppContent() {
                 anniversaryDate: row.anniversary_date || prev.anniversaryDate,
                 planTier: row.plan_tier || prev.planTier,
               };
+              saveUserSession(next);
+              return next;
             });
           }
         },
@@ -147,6 +204,7 @@ function AppContent() {
 
   const handleUpdateAccount = async (updated: CoupleAccount) => {
     setCurrentAccount(updated);
+    saveUserSession(updated);
     if (updated.id) {
       try {
         await updateCoupleProfile(updated.id, {
@@ -174,24 +232,6 @@ function AppContent() {
         console.warn('Error updating vault photo in Supabase:', err);
       }
     }
-  };
-
-  const logoTapCount = useRef(0);
-  const logoTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleLogoSecretTap = () => {
-    logoTapCount.current += 1;
-    if (logoTapTimer.current) {
-      clearTimeout(logoTapTimer.current);
-    }
-    if (logoTapCount.current >= 5) {
-      logoTapCount.current = 0;
-      setSecretVaultOpen(true);
-      return;
-    }
-    logoTapTimer.current = setTimeout(() => {
-      logoTapCount.current = 0;
-    }, 1800);
   };
 
   const requestAndroidGallery = async () => {
@@ -271,6 +311,23 @@ function AppContent() {
     }
   };
 
+  if (sessionLoading) {
+    return (
+      <View
+        style={[
+          styles.appContainer,
+          {
+            backgroundColor: COLORS.wineDeep,
+            justifyContent: 'center',
+            alignItems: 'center',
+          },
+        ]}>
+        <StatusBar barStyle="light-content" />
+        <ActivityIndicator size="large" color={COLORS.gold} />
+      </View>
+    );
+  }
+
   if (!currentAccount) {
     return (
       <View
@@ -280,21 +337,12 @@ function AppContent() {
         ]}>
         <StatusBar barStyle="light-content" />
         <LoginScreen
-          onLogoSecretTap={handleLogoSecretTap}
           onLoginSuccess={account => {
+            saveUserSession(account);
             setCurrentAccount(account);
             setActiveTab('inicio');
             setShowPermissions(true);
           }}
-        />
-        <SecretVaultModal
-          visible={secretVaultOpen}
-          onClose={() => setSecretVaultOpen(false)}
-          photos={galleryPhotos}
-          partnerOne="Titular"
-          partnerTwo="Pareja"
-          onUpdatePhotoNote={handleUpdatePhotoNote}
-          onSendPhotoToChat={handleSendVaultPhotoToChat}
         />
       </View>
     );
@@ -314,7 +362,6 @@ function AppContent() {
             account={currentAccount}
             onUpdateAccount={handleUpdateAccount}
             onNavigateTab={handleSelectTab}
-            onLogoSecretTap={handleLogoSecretTap}
           />
         )}
         {activeTab === 'planes' && <PlansScreen account={currentAccount} />}
@@ -333,8 +380,10 @@ function AppContent() {
           <ProfileScreen
             account={currentAccount}
             onUpdateAccount={handleUpdateAccount}
-            onLogoSecretTap={handleLogoSecretTap}
-            onLogout={() => setCurrentAccount(null)}
+            onLogout={async () => {
+              await clearUserSession();
+              setCurrentAccount(null);
+            }}
           />
         )}
       </View>
@@ -361,16 +410,6 @@ function AppContent() {
           setShowPermissions(false);
         }}
         onClose={() => setShowPermissions(false)}
-      />
-
-      <SecretVaultModal
-        visible={secretVaultOpen}
-        onClose={() => setSecretVaultOpen(false)}
-        photos={galleryPhotos}
-        partnerOne={currentAccount.partnerOne}
-        partnerTwo={currentAccount.partnerTwo}
-        onUpdatePhotoNote={handleUpdatePhotoNote}
-        onSendPhotoToChat={handleSendVaultPhotoToChat}
       />
     </View>
   );
